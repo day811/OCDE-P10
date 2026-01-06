@@ -1,0 +1,172 @@
+id: ocde_p10
+namespace: company.team
+variables:
+  sourceErp: /app/data/sources/Fichier_erp.xlsx
+  sourceWeb: /app/data/sources/Fichier_web.xlsx
+  sourceLink: /app/data/sources/fichier_liaison.xlsx
+  tempDir: /app/data/tmp
+  outputDir: /app/data/output
+
+tasks:
+  - id: load_files
+    type: io.kestra.plugin.core.flow.Parallel
+    tasks:
+      - id: process_erp
+        type: io.kestra.plugin.core.flow.Sequential
+        description: ERP extract xlsx process
+        tasks:
+          # 1. LOAD SOURCE
+          - id: load_erp
+            type: io.kestra.plugin.jdbc.duckdb.Queries
+            sql: |-
+              -- total lignes source
+              CREATE OR REPLACE TABLE erp_raw AS
+              SELECT *
+              FROM read_xlsx('{{ vars.sourceErp }}', header = true);
+
+              COPY erp_raw TO '{{ vars.tempDir }}/erp_raw.parquet' (FORMAT PARQUET);
+              SELECT COUNT(*) AS total_raw FROM erp_raw;
+            fetchType: FETCH_ONE
+
+          # 2. CLEAN SOURCE 
+          - id: clean_erp
+            type: io.kestra.plugin.jdbc.duckdb.Queries
+            sql: |-
+              CREATE OR REPLACE TABLE erp_clean AS
+              SELECT *
+              FROM read_parquet('{{ vars.tempDir }}/erp_raw.parquet')
+              WHERE product_id IS NOT NULL;
+              COPY erp_clean TO '{{ vars.tempDir }}/erp_clean.parquet' (FORMAT PARQUET);
+              SELECT total_clean, {{ outputs.load_erp.outputs[0].row.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM erp_clean)
+            fetchType: FETCH_ONE
+
+          # 3. DEDUP CLEANED SOURCE
+          - id: dedup_erp
+            type: io.kestra.plugin.jdbc.duckdb.Queries
+            sql: |-
+              CREATE OR REPLACE TABLE dedup_erp AS
+              SELECT DISTINCT ON(product_id) * FROM read_parquet('{{ vars.tempDir }}/erp_clean.parquet');
+              COPY dedup_erp TO '{{ vars.tempDir }}/dedup_erp.parquet' (FORMAT PARQUET);
+              SELECT total_dedup, {{ outputs.clean_erp.outputs[0].row.total_clean }} - total_dedup AS dedup FROM ( SELECT COUNT(*) AS total_dedup FROM dedup_erp)
+            fetchType: FETCH_ONE
+
+          # 5. REPORT DEDUP
+          - id: log_erp
+            type: io.kestra.plugin.core.log.Log
+            message:
+              - "Data source Fichier_erp.xlsx"
+              - "Total rows      : {{ outputs.load_erp.outputs[0].row.total_raw }}"
+              - "Missing         : -{{ outputs.clean_erp.outputs[0].row.cleaned }}"
+              - "Cleaned rows    : {{ outputs.clean_erp.outputs[0].row.total_clean }}"
+              - "Duplicated rows : -{{ outputs.dedup_erp.outputs[0].row.dedup }}"
+              - "Final rows      : {{ outputs.dedup_erp.outputs[0].row.total_dedup }}"
+
+      - id: process_web
+        type: io.kestra.plugin.core.flow.Sequential
+        tasks:
+          # 1. LOAD SOURCE
+          - id: load_web
+            type: io.kestra.plugin.scripts.python.Script
+            taskRunner:
+              type: io.kestra.plugin.core.runner.Process
+            dependencies:
+              - pandas
+              - openpyxl
+              - fastparquet
+              - kestra
+            script: |
+              import pandas as pd
+              from kestra import Kestra
+              # Lire le fichier Excel
+              df = pd.read_excel('{{ vars.sourceWeb }}', dtype = {'sku': str})
+              df.sort_values(by='total_sales', ascending=False, inplace=True)
+              # Sauvegarder en parquet
+              df.to_parquet('{{ vars.tempDir }}/web_raw.parquet', engine='fastparquet')
+              Kestra.outputs({"total_raw": len(df)})
+
+          # 2. CLEAN SOURCE 
+          - id: clean_web
+            type: io.kestra.plugin.jdbc.duckdb.Queries
+            sql: |-
+              CREATE OR REPLACE TABLE web_clean AS
+              SELECT *
+              FROM read_parquet('{{ vars.tempDir }}/web_raw.parquet')
+              WHERE sku IS NOT NULL;
+              COPY web_clean TO '{{ vars.tempDir }}/web_clean.parquet' (FORMAT PARQUET);
+              SELECT total_clean, {{ outputs.load_web.vars.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM web_clean)
+            fetchType: FETCH_ONE
+
+          # 3. DEDUP CLEANED SOURCE
+          - id: dedup_web
+            type: io.kestra.plugin.jdbc.duckdb.Queries
+            sql: |-
+              CREATE OR REPLACE TABLE dedup_web AS
+              SELECT DISTINCT ON(sku) * FROM read_parquet('{{ vars.tempDir }}/web_clean.parquet');
+              COPY dedup_web TO '{{ vars.tempDir }}/dedup_web.parquet' (FORMAT PARQUET);
+
+              SELECT total_dedup, {{ outputs.clean_web.outputs[0].row.total_clean }} - total_dedup AS dedup FROM ( SELECT COUNT(*) AS total_dedup FROM dedup_web)
+            fetchType: FETCH_ONE
+
+          # 5. REPORT DEDUP
+          - id: log_web
+            type: io.kestra.plugin.core.log.Log
+            message:
+              - "Data source Fichier_web.xlsx"
+              - "Total rows      : {{ outputs.load_web.vars.total_raw }}"
+              - "Missing         : -{{ outputs.clean_web.outputs[0].row.cleaned }}"
+              - "Cleaned rows    : {{ outputs.clean_web.outputs[0].row.total_clean }}"
+              - "Duplicated rows : -{{ outputs.dedup_web.outputs[0].row.dedup }}"
+              - "Final rows      : {{ outputs.dedup_web.outputs[0].row.total_dedup }}"
+
+      - id: process_link
+        type: io.kestra.plugin.core.flow.Sequential
+        tasks:
+          # 1. LOAD SOURCE
+          - id: load_link
+            type: io.kestra.plugin.jdbc.duckdb.Queries
+            sql: |-
+              -- total lignes source
+              CREATE OR REPLACE TABLE web_raw AS
+              SELECT *
+              FROM read_xlsx('{{ vars.sourceLink }}', header = true, all_varchar = true);
+
+              COPY web_raw TO '{{ vars.tempDir }}/link_raw.parquet' (FORMAT PARQUET);
+
+  - id: merge_files
+    type: io.kestra.plugin.core.flow.Sequential
+    tasks:
+      - id: join_files
+        type: io.kestra.plugin.jdbc.duckdb.Queries
+        sql: |-
+          CREATE OR REPLACE TABLE merge AS
+          SELECT e.*, w.* FROM read_parquet('{{ vars.tempDir }}/dedup_erp.parquet') AS e
+          INNER JOIN read_parquet('{{ vars.tempDir }}/link_raw.parquet') AS l
+           ON e.product_id = l.product_id
+          INNER JOIN read_parquet('{{ vars.tempDir }}/dedup_web.parquet') AS w
+           ON l.id_web = w.sku ;
+          COPY merge TO '{{ vars.tempDir }}/merge.parquet' (FORMAT PARQUET);
+          COPY merge TO '{{ vars.tempDir }}/merge.csv' (FORMAT CSV);
+          SELECT COUNT(*) as merged FROM merge;
+        fetchType: FETCH_ONE
+
+      - id: sales_total
+        type: io.kestra.plugin.jdbc.duckdb.Query
+        sql: |-
+          SELECT ROUND(SUM(total_sales * price),2 ) AS sales_total FROM '{{ vars.tempDir }}/merge.parquet';
+        fetchType: FETCH_ONE
+
+      - id: log_merge
+        type: io.kestra.plugin.core.log.Log
+        message:
+          - "Merged files"
+          - "Total merged records : {{ outputs.join_files.outputs[0].row.merged }}"
+          - "Sales total     : {{ outputs.sales_total.row.sales_total }}"
+
+      - id: sales_products
+        type: io.kestra.plugin.jdbc.duckdb.Queries
+        sql: |-
+          INSTALL excel;
+          LOAD excel;
+          COPY(SELECT product_id, sku, post_title , total_sales, price, ROUND(total_sales * price , 2) AS sales_product FROM '{{ vars.tempDir }}/merge.parquet' ORDER BY sales_product DESC)
+           TO '{{ vars.outputDir }}/sales_product.xlsx ' WITH(FORMAT xlsx, HEADER true);
+ 
