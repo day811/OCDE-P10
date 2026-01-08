@@ -57,11 +57,11 @@ tasks:
 
               SELECT COUNT(*) AS total_raw FROM erp_raw;
             fetchType: FETCH_ONE
+            
           - id: clean_erp
             type: io.kestra.plugin.jdbc.duckdb.Queries
             description: Remove rows with NULL product_id
-            fetchType: FETCH_ONE
-            sql: |2
+            sql: |
               CREATE OR REPLACE TABLE erp_clean AS
 
               SELECT *
@@ -71,6 +71,7 @@ tasks:
               COPY erp_clean TO '{{ vars.tempDir }}/erp_clean.parquet' (FORMAT PARQUET);
 
               SELECT total_clean, {{ outputs.load_erp.outputs[0].row.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM erp_clean)
+            fetchType: FETCH_ONE
 
           # 3. DEDUP CLEANED SOURCE
           - id: dedup_erp
@@ -105,9 +106,9 @@ tasks:
 
             retry:
               type: constant
-              maxDuration: PT10S
+              maxDuration: PT3M
               maxAttempts: 2
-              interval: PT3S
+              interval: PT30S
 
             script: |
               import duckdb
