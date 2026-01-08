@@ -1,6 +1,8 @@
 # project customization
 sources/*
 *.parquet
+data/output/*
+data/tmp/*
 
 
 # Byte-compiled / optimized / DLL files
