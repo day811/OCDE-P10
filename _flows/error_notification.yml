@@ -1,0 +1,103 @@
+id: error_notification
+namespace: company.team
+description: "Email notification for critical errors in ocde_p10 pipeline"
+
+variables:
+  emailFrom: "kestra-alerts@company.com"
+  emailTo: "admin@company.com"
+  smtpHost: "smtp.company.com"
+  smtpPort: 587
+  smtpUser: "kestra-alerts@company.com"
+
+tasks:
+  - id: prepare_error_context
+    type: io.kestra.plugin.scripts.python.Script
+    description: "Prepare error context and details"
+    
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    
+    dependencies:
+      - kestra
+      - requests
+    
+    script: |
+      from kestra import Kestra
+      from datetime import datetime
+      
+      # Get execution details
+      execution_id = "{{ execution.id }}"
+      flow_id = "{{ flow.id }}"
+      error_msg = "{{ execution.failures }}"
+      
+      # Build error summary
+      timestamp = datetime.now().isoformat()
+      
+      summary = f"""
+      PIPELINE FAILURE ALERT
+      =====================
+      
+      Flow: {flow_id}
+      Execution ID: {execution_id}
+      Timestamp: {timestamp}
+      
+      Error Details:
+      {error_msg}
+      
+      Action Required:
+      - Review execution logs in Kestra UI
+      - Check temporary data files in /app/data/tmp
+      - Verify input sources (ERP, WEB, LIAISON)
+      - Contact Data Engineering team
+      """
+      
+      Kestra.outputs({"error_summary": summary, "timestamp": timestamp})
+  
+  
+  - id: send_email_alert
+    type: io.kestra.plugin.email.MailSend
+    description: "Send email notification to admin"
+    
+    from: "{{ vars.emailFrom }}"
+    to: "{{ vars.emailTo }}"
+    subject: "🔴 CRITICAL: P10 ETL Pipeline Failure - {{ inputs.flow_id }}"
+    
+    plainTextContent: |
+      KESTRA PIPELINE FAILURE NOTIFICATION
+      ====================================
+      
+      Flow Name: {{ inputs.flow_id }}
+      Execution ID: {{ inputs.execution_id }}
+      Timestamp: {{ outputs.prepare_error_context.vars.timestamp }}
+      
+      ERROR MESSAGE:
+      {{ inputs.error_message }}
+      
+      NEXT STEPS:
+      1. Login to Kestra UI
+      2. Navigate to Executions > {{ inputs.execution_id }}
+      3. Review logs to identify root cause
+      4. Check data quality in /app/data/tmp/
+      5. Fix the issue and re-run the pipeline
+      
+      For assistance, contact the Data Engineering team.
+      
+      ====================================
+      Automated Alert from Kestra
+    
+    host: "{{ vars.smtpHost }}"
+    port: "{{ vars.smtpPort }}"
+    username: "{{ vars.smtpUser }}"
+    password: "{{ secret('SMTP_PASSWORD') }}"
+    
+  
+  - id: log_notification_sent
+    type: io.kestra.plugin.core.log.Log
+    message: |
+      ✉️  ERROR NOTIFICATION SENT
+      ════════════════════════════════════════════════
+      📧 Email sent to: {{ vars.emailTo }}
+      📋 Subject: P10 ETL Pipeline Failure
+      🔗 Execution: {{ inputs.execution_id }}
+      ⏰ Timestamp: {{ outputs.prepare_error_context.vars.timestamp }}
+      ════════════════════════════════════════════════

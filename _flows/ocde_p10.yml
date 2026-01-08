@@ -53,7 +53,7 @@ tasks:
               SELECT total_dedup, {{ outputs.clean_erp.outputs[0].row.total_clean }} - total_dedup AS dedup FROM ( SELECT COUNT(*) AS total_dedup FROM dedup_erp)
             fetchType: FETCH_ONE
 
-          # 5. TEST FINAL DATA DB
+          # 4. TEST FINAL DATA DB
           - id: test_erp
             type: io.kestra.plugin.scripts.python.Script
             taskRunner:
@@ -73,25 +73,31 @@ tasks:
               result = duckdb.sql(sql).fetchall()
               print(result[0][0])
               Kestra.outputs({"missings": result[0][0]})
-              ql = f"""
-              SELECT COUNT(*) as count FROM read_parquet('{dedup_file}')
-              GROUP BY product_id HAVING count > 1; 
+
+              sql = f"""
+              SELECT COUNT(*) as nb_product_id_doublons
+              FROM (
+                  SELECT product_id
+                  FROM read_parquet('{dedup_file}')
+                  GROUP BY product_id
+                  HAVING COUNT(*) > 1
+              ) AS d   
               """
               result = duckdb.sql(sql).fetchall()
               print(result[0][0])
               Kestra.outputs({"duplicated": result[0][0]})
 
-          # 6. REPORT PROCESS
+          # 5. REPORT PROCESS
           - id: log_erp
             type: io.kestra.plugin.core.log.Log
             message:
               - "Data source Fichier_erp.xlsx"
-              - "Total rows      : {{ outputs.load_erp.outputs[0].row.total_raw }}"
+              - "Total rows      : {{ outputs.load_erp.outputs[0].row.total_raw }} in Fichier_erp.xlsx"
               - "Missing rows    : -{{ outputs.clean_erp.outputs[0].row.cleaned }}"
-              - "Cleaned rows    : {{ outputs.clean_erp.outputs[0].row.total_clean }}"
+              - "Cleaned rows    : {{ outputs.clean_erp.outputs[0].row.total_clean }} in clean_erp.parquet"
               - "Duplicated rows : -{{ outputs.dedup_erp.outputs[0].row.dedup }}"
-              - "Final rows      : {{ outputs.dedup_erp.outputs[0].row.total_dedup }}"
-              - "Final data db test"
+              - "Final rows      : {{ outputs.dedup_erp.outputs[0].row.total_dedup }} in dedup_erp.parquet"
+              - "Final data db test : dedup_erp.parquet"
               - "Missing product_id rows : {{ outputs.test_erp.vars.missings}}"
               - "Duplicated product_id_rows : : {{ outputs.test_erp.vars.duplicated}}"
 
@@ -141,16 +147,53 @@ tasks:
               SELECT total_dedup, {{ outputs.clean_web.outputs[0].row.total_clean }} - total_dedup AS dedup FROM ( SELECT COUNT(*) AS total_dedup FROM dedup_web)
             fetchType: FETCH_ONE
 
-          # 6. REPORT DEDUP
+          # 4. TEST FINAL DATA DB
+          - id: test_web
+            type: io.kestra.plugin.scripts.python.Script
+            taskRunner:
+              type: io.kestra.plugin.core.runner.Process
+            dependencies:
+              - duckdb
+              - kestra
+            script: |
+              import duckdb
+              from kestra import Kestra
+              # Lire le fichier Excel
+              dedup_file= "{{ vars.tempDir }}/web_dedup.parquet"
+              sql = f"""
+              SELECT COUNT(*) as total FROM read_parquet('{dedup_file}')
+              WHERE sku IS NULL; 
+              """
+              result = duckdb.sql(sql).fetchall()
+              print(result[0][0])
+              Kestra.outputs({"missings": result[0][0]})
+
+              sql = f"""
+              SELECT COUNT(*) as nb_sku_doublons
+              FROM (
+                  SELECT sku
+                  FROM read_parquet('{dedup_file}')
+                  GROUP BY sku
+                  HAVING COUNT(*) > 1
+              ) AS d   
+              """
+              result = duckdb.sql(sql).fetchall()
+              print(result[0][0])
+              Kestra.outputs({"duplicated": result[0][0]})
+
+          # 5. REPORT DEDUP
           - id: log_web
             type: io.kestra.plugin.core.log.Log
             message:
               - "Data source Fichier_web.xlsx"
-              - "Total rows      : {{ outputs.load_web.vars.total_raw }}"
-              - "Missing         : -{{ outputs.clean_web.outputs[0].row.cleaned }}"
-              - "Cleaned rows    : {{ outputs.clean_web.outputs[0].row.total_clean }}"
+              - "Total rows      : {{ outputs.load_web.vars.total_raw }} in Fichier_web.xlsx"
+              - "Missing rows    : -{{ outputs.clean_web.outputs[0].row.cleaned }}"
+              - "Cleaned rows    : {{ outputs.clean_web.outputs[0].row.total_clean }} in clean_web.parquet"
               - "Duplicated rows : -{{ outputs.dedup_web.outputs[0].row.dedup }}"
-              - "Final rows      : {{ outputs.dedup_web.outputs[0].row.total_dedup }}"
+              - "Final rows      : {{ outputs.dedup_web.outputs[0].row.total_dedup }} in dedup_web.parquet"
+              - "Final data db test : dedup_web.parquet"
+              - "Missing product_id rows : {{ outputs.test_web.vars.missings}}"
+              - "Duplicated product_id_rows : : {{ outputs.test_web.vars.duplicated}}"
 
       - id: process_link
         type: io.kestra.plugin.core.flow.Sequential
