@@ -1,0 +1,37 @@
+id: test
+namespace: company.team
+variables:
+  sourceErp: /app/data/sources/Fichier_erp.xlsx
+  sourceWeb: /app/data/sources/Fichier_web.xlsx
+  sourceLink: /app/data/sources/fichier_liaison.xlsx
+  tempDir: /app/data/tmp
+  outputDir: /app/data/output
+
+tasks:
+  - id: test_task
+    type: io.kestra.plugin.scripts.python.Script
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+    dependencies:
+      - duckdb
+      - kestra
+    script: |
+      import duckdb
+      from kestra import Kestra
+      # Lire le fichier Excel
+      dedup_file= "{{ vars.tempDir }}/erp_dedup.parquet"
+      sql = f"""
+      SELECT COUNT(*) as total FROM read_parquet('{dedup_file}')
+      WHERE product_id IS NULL; 
+      """
+      result = duckdb.sql(sql).fetchall()
+      print(result[0][0])
+      Kestra.outputs({"missings": result[0][0]})
+      ql = f"""
+      SELECT COUNT(*) as count FROM read_parquet('{dedup_file}')
+      GROUP BY product_id HAVING count > 1; 
+      """
+      result = duckdb.sql(sql).fetchall()
+      print(result[0][0])
+      Kestra.outputs({"duplicated": result[0][0]})
+
