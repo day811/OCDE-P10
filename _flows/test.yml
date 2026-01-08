@@ -1,0 +1,55 @@
+id: test
+namespace: company.team
+variables:
+  tempDir: /app/data/tmp
+
+tasks:
+  - id: process_erp
+    type: io.kestra.plugin.core.flow.WorkingDirectory
+    description: ERP extract xlsx process
+    tasks:
+      - id: load_erp
+        type: io.kestra.plugin.jdbc.duckdb.Queries
+        sql: |-
+          -- total lignes source
+          CREATE OR REPLACE TABLE erp_raw AS
+          SELECT *
+          FROM read_xlsx('/app/data/sources/Fichier_erp.xlsx', header = true);
+
+          COPY erp_raw TO '{{ vars.tempDir }}/erp_raw.parquet' (FORMAT PARQUET);
+          SELECT COUNT(*) AS total_raw FROM erp_raw;
+        fetchType: FETCH_ONE
+
+      - id: clean_erp
+        type: io.kestra.plugin.jdbc.duckdb.Queries
+        sql: |-
+          CREATE OR REPLACE TABLE erp_clean AS
+          SELECT *
+          FROM read_parquet('{{ vars.tempDir }}/erp_raw.parquet')
+          WHERE product_id IS NOT NULL;
+          COPY erp_clean TO '{{ vars.tempDir }}/erp_clean.parquet' (FORMAT PARQUET);
+          SELECT total_clean, {{ outputs.load_erp.outputs[0].row.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM erp_clean)
+        fetchType: FETCH_ONE
+
+      # 3. DEDUP CLEANED SOURCE
+      - id: erp_dedup
+        type: io.kestra.plugin.jdbc.duckdb.Queries
+        sql: |-
+          CREATE OR REPLACE TABLE erp_dedup AS
+          SELECT DISTINCT ON(product_id) * FROM read_parquet('{{ vars.tempDir }}/erp_clean.parquet')
+          WHERE product_id IS NOT NULL;
+          COPY erp_dedup TO '{{ vars.tempDir }}/erp_dedup.parquet' (FORMAT PARQUET);
+
+          SELECT total_dedup, {{ outputs.clean_erp.outputs[0].row.total_clean }} - total_dedup AS dedup FROM ( SELECT COUNT(*) AS total_dedup FROM erp_dedup)
+        fetchType: FETCH_ONE
+
+      - id: log_total
+        type: io.kestra.plugin.core.log.Log
+        message:
+          - "Data source Fichier_erp.xlsx"
+          - "Total rows      : {{ outputs.load_erp.outputs[0].row.total_raw }}"
+          - "Missing         : -{{ outputs.clean_erp.outputs[0].row.cleaned }}"
+          - "Cleaned rows    : {{ outputs.clean_erp.outputs[0].row.total_clean }}"
+          - "Duplicated rows : -{{ outputs.erp_dedup.outputs[0].row.dedup }}"
+          - "Final rows      : {{ outputs.erp_dedup.outputs[0].row.total_dedup }}"
+
