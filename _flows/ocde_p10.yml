@@ -3,21 +3,6 @@ namespace: company.team
 
 description: "P10 Wine Sales ETL Pipeline with Professional Error Handling"
 
-# ===== CONFIGURATION GLOBALE D'ERREURS =====
-errors:
-  - id: error_summary
-    type: io.kestra.plugin.core.log.Log
-    message: |
-      🔴 PIPELINE CRASHED
-      Execution: {{ execution.id }}
-      Flow: {{ flow.id }}
-      Errors: {{ execution.failures }}
-  
-  - id: cleanup_temp
-    type: io.kestra.plugin.scripts.shell.Commands
-    commands:
-      - rm -rf {{ vars.tempDir }}/*
-
 variables:
   sourceErp: /app/data/sources/Fichier_erp.xlsx
   sourceWeb: /app/data/sources/Fichier_web.xlsx
@@ -444,7 +429,7 @@ tasks:
 
   - id: log_final
     type: io.kestra.plugin.core.log.Log
-    message: |
+    message: |+
       ✅ ════════════════════════════════════════════════════════════
                     PIPELINE EXECUTION COMPLETED
       ════════════════════════════════════════════════════════════
@@ -459,6 +444,10 @@ tasks:
       ✅ All validations passed
       ✅ All exports completed
       ════════════════════════════════════════════════════════════
-      
+
 
         
+triggers:
+  - id: monthly_schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: 0 9 15 * *

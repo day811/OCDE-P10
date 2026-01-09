@@ -11,13 +11,25 @@ triggers:
       - type: io.kestra.plugin.core.condition.ExecutionNamespace
         namespace: company.team
         prefix: true
+    disabled: false
 
 tasks:
   - id: send_mail
     type: io.kestra.plugin.email.MailSend
-    to: admin@company.com
+    to: day811@laposte.net
     subject: "🔴 ocde_p10 FAILED: {{ trigger.executionId }}"
-    plainTextContent: |
+    host: "{{ secret('SMTP_HOST') }}"
+    transportStrategy: SMTP_TLS
+    password: "{{ secret('SMTP_PASSWORD') }}"
+    username: "{{ secret('SMTP_USER') }}"
+    port: "587"
+    htmlTextContent: |-
+      <body><title>Pipeline ocde_p10 a échoué!</title>
+      <p>Execution: {{ trigger.executionId }}</p>
+      <p>Voir les logs pour plus de détails</p>
+      </body>
+    from: day811@laposte.net
+    plainTextContent: |-
       Pipeline ocde_p10 a échoué!
       Execution: {{ trigger.executionId }}
-      Voir: https://kestra-ui/executions/{{ trigger.executionId }}
+      Voir les logs pour plus de détails
