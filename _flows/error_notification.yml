@@ -1,0 +1,23 @@
+id: error_notification
+namespace: company.team
+
+triggers:
+  - id: on_failure
+    type: io.kestra.plugin.core.trigger.Flow
+    conditions:
+      - type: io.kestra.plugin.core.condition.ExecutionStatus
+        in:
+          - FAILED
+      - type: io.kestra.plugin.core.condition.ExecutionNamespace
+        namespace: company.team
+        prefix: true
+
+tasks:
+  - id: send_mail
+    type: io.kestra.plugin.email.MailSend
+    to: admin@company.com
+    subject: "🔴 ocde_p10 FAILED: {{ trigger.executionId }}"
+    plainTextContent: |
+      Pipeline ocde_p10 a échoué!
+      Execution: {{ trigger.executionId }}
+      Voir: https://kestra-ui/executions/{{ trigger.executionId }}
