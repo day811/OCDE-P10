@@ -163,8 +163,9 @@ tasks:
             type: io.kestra.plugin.core.log.Log
             description: Report erp.xlsx file ingestion
             message: |
-              📊 ════════════════════════════════════════════════════════
-                       ERP PIPELINE SUMMARY
+              -
+              ════════════════════════════════════════════════════════
+              📊         ERP PIPELINE SUMMARY
               ════════════════════════════════════════════════════════
               📁 Source: Fichier_erp.xlsx
               📈 Total rows loaded: {{ outputs.load_erp.outputs[0].row.total_raw }}
@@ -328,8 +329,9 @@ tasks:
           - id: log_web
             type: io.kestra.plugin.core.log.Log
             message: |
-              📊 ════════════════════════════════════════════════════════
-                       WEB PIPELINE SUMMARY
+              -
+              ════════════════════════════════════════════════════════
+              📊         WEB PIPELINE SUMMARY
               ════════════════════════════════════════════════════════
               📁 Source: Fichier_web.xlsx
               📈 Total rows loaded: {{ outputs.load_web.vars.total_raw }}
@@ -372,6 +374,98 @@ tasks:
           SELECT COUNT(*) as merged FROM merge;
         fetchType: FETCH_ONE
 
+      - id: test_merge
+        type: io.kestra.plugin.scripts.python.Script
+        description: "Test ERP data quality metrics"
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+
+        retry:
+          type: constant
+          maxDuration: PT3M
+          maxAttempts: 2
+          interval: PT30S
+
+        dependencies:
+          - duckdb
+          - kestra
+        script: |
+          import duckdb
+          from kestra import Kestra
+    
+          merge_file= "{{ vars.tempDir }}/merge.parquet"
+          web_file="{{ vars.tempDir }}/web_dedup.parquet"
+          sql = f"""
+          SELECT COUNT(m.sku) as count FROM read_parquet('{web_file}') AS w
+          LEFT JOIN read_parquet('{merge_file}') AS m ON w.sku = m.sku 
+          WHERE m.sku IS NULL; 
+          """
+          result = duckdb.sql(sql).fetchall()
+          print(result[0][0])
+          Kestra.outputs({"lost": result[0][0]})
+
+          merge_file= "{{ vars.tempDir }}/merge.parquet"
+          erp_file="{{ vars.tempDir }}/erp_dedup.parquet"
+          sql = f"""
+          SELECT COUNT(product_id) as count FROM read_parquet('{merge_file}') AS m
+          WHERE m.product_id IS NULL OR m.price IS NULL; 
+          """
+          result = duckdb.sql(sql).fetchall()
+          print(result[0][0])
+          Kestra.outputs({"price": result[0][0]})
+
+
+      # 5. ⭐ CRITICAL: Validate MERGE Quality
+      - id: validate_merge
+        type: io.kestra.plugin.scripts.python.Script
+        description: "⭐ CRITICAL: Validate MERGE quality - STOP pipeline if errors"
+
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+
+        retry:
+          type: constant
+          maxDuration: PT3M
+          maxAttempts: 2
+          interval: PT30S
+
+        script: |
+          from kestra import Kestra
+
+          lost = int("{{ outputs.test_merge.vars.lost }}")
+          price = int("{{ outputs.test_merge.vars.price }}")
+
+          print("=" * 60)
+          print("🔍 MERGE DATA QUALITY VALIDATION")
+          print("=" * 60)
+          print(f"  • Missing sku in merge file : {lost}")
+          print(f"  • Missing price in merge file : {price}")
+
+          MAX_LOST = 0
+          MAX_MISSING_PRICE = 0
+
+          errors = []
+
+          if lost > MAX_LOST:
+              errors.append(f"CRITICAL: missing {lost} rows from web file in merge file")
+
+          if price > MAX_MISSING_PRICE:
+              errors.append(f"CRITICAL: {duplicated} duplicate sku values detected")
+
+          if errors:
+              print("\n" + "=" * 60)
+              print("VALIDATION FAILED - STOPPING PIPELINE")
+              print("=" * 60)
+              for error in errors:
+                  print(f"  {error}")
+              print("=" * 60)
+              raise Exception(f"MERGE Quality Validation Failed: {len(errors)} critical issue(s)")
+
+          print("\n" + "=" * 60)
+          print("VALIDATION PASSED - WEB data quality OK")
+          print("=" * 60)
+          Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
+
       - id: sales_total
         type: io.kestra.plugin.jdbc.duckdb.Query
         sql: |-
@@ -380,10 +474,19 @@ tasks:
 
       - id: log_merge
         type: io.kestra.plugin.core.log.Log
-        message:
-          - "Merged files"
-          - "Total merged records : {{ outputs.merge_files.outputs[0].row.merged }}"
-          - "Sales total     : {{ outputs.sales_total.row.sales_total }}"
+        message: |
+              -
+              ════════════════════════════════════════════════════════
+              📊         MERGE PROCESS SUMMARY
+              ════════════════════════════════════════════════════════
+              📁 Source: dedup_web -- raw_link -- dedup_erp
+              🔄 Rows in dedup_web : {{ outputs.dedup_web.outputs[0].row.total_dedup }}
+              📈 Total rows merged: {{ outputs.merge_files.outputs[0].row.merged }}
+              🧪 Missing sku from web in merge : {{ outputs.test_merge.vars.lost }}
+              🧪 Missing price in merge : {{ outputs.test_merge.vars.price }}
+              ✅ Quality check: {{ outputs.validate_merge.vars.status }}
+              🧹 Total sales: {{ outputs.sales_total.row.sales_total }}
+              ════════════════════════════════════════════════════════
 
       - id: sales_products
         type: io.kestra.plugin.jdbc.duckdb.Queries
@@ -430,8 +533,9 @@ tasks:
   - id: log_final
     type: io.kestra.plugin.core.log.Log
     message: |+
-      ✅ ════════════════════════════════════════════════════════════
-                    PIPELINE EXECUTION COMPLETED
+      -
+      ════════════════════════════════════════════════════════════
+      📊              PIPELINE EXECUTION COMPLETED
       ════════════════════════════════════════════════════════════
       📊 Merged records: {{ outputs.merge_files.outputs[0].row.merged }}
       💰 Total sales: {{ outputs.sales_total.row.sales_total }}

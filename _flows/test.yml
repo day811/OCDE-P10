@@ -1,26 +1,99 @@
 id: test
 namespace: company.team
 description: "Test Flow"
-
-# ===== CONFIGURATION GLOBALE D'ERREURS (Namespace level) =====
+variables:
+  tempDir: /app/data/tmp
+  outputDir: /app/data/output
 
 tasks:
-  - id: send_mail
-    type: io.kestra.plugin.email.MailSend
-    to: day811@laposte.net
-    subject: Test
-    host: "{{ secret('SMTP_HOST') }}"
-    transportStrategy: SMTP_TLS
-    password: "{{ secret('SMTP_PASSWORD') }}"
-    username: "{{ secret('SMTP_USER') }}"
-    port: "587"
-    htmlTextContent: |-
-      <body><title>Pipeline ocde_p10 a échoué!</title>
-      <p>Execution: </p>
-      <p>Voir: </p>
-      </body>
-    from: day811@laposte.net
-    plainTextContent: |-
-      Pipeline ocde_p10 a échoué!
-      Execution: 
-      Voir: https://kestra-ui/executions/
+  - id: test_merge
+    type: io.kestra.plugin.scripts.python.Script
+    description: "Test ERP data quality metrics"
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+
+    retry:
+      type: constant
+      maxDuration: PT3M
+      maxAttempts: 2
+      interval: PT30S
+
+    dependencies:
+      - duckdb
+      - kestra
+    script: |
+      import duckdb
+      from kestra import Kestra
+ 
+      merge_file= "{{ vars.tempDir }}/merge.parquet"
+      web_file="{{ vars.tempDir }}/web_dedup.parquet"
+      sql = f"""
+      SELECT COUNT(m.sku) as count FROM read_parquet('{web_file}') AS w
+      LEFT JOIN read_parquet('{merge_file}') AS m ON w.sku = m.sku 
+      WHERE m.sku IS NULL; 
+      """
+      result = duckdb.sql(sql).fetchall()
+      print(result[0][0])
+      Kestra.outputs({"lost": result[0][0]})
+
+      merge_file= "{{ vars.tempDir }}/merge.parquet"
+      erp_file="{{ vars.tempDir }}/erp_dedup.parquet"
+      sql = f"""
+      SELECT COUNT(product_id) as count FROM read_parquet('{merge_file}') AS m
+      WHERE m.product_id IS NULL OR m.price IS NULL; 
+      """
+      result = duckdb.sql(sql).fetchall()
+      print(result[0][0])
+      Kestra.outputs({"price": result[0][0]})
+
+
+  # 5. ⭐ CRITICAL: Validate WEB Quality
+  - id: validate_files_merge
+    type: io.kestra.plugin.scripts.python.Script
+    description: "⭐ CRITICAL: Validate MERGE quality - STOP pipeline if errors"
+
+    taskRunner:
+      type: io.kestra.plugin.core.runner.Process
+
+    retry:
+      type: constant
+      maxDuration: PT3M
+      maxAttempts: 2
+      interval: PT30S
+
+    script: |
+      from kestra import Kestra
+
+      lost = int("{{ outputs.test_merge.vars.lost }}")
+      price = int("{{ outputs.test_merge.vars.price }}")
+
+      print("=" * 60)
+      print("🔍 MERGE DATA QUALITY VALIDATION")
+      print("=" * 60)
+      print(f"  • Missing sku in merge file : {lost}")
+      print(f"  • Missing price in merge file : {price}")
+
+      MAX_LOST = 0
+      MAX_MISSING_PRICE = 0
+
+      errors = []
+
+      if lost > MAX_LOST:
+          errors.append(f"CRITICAL: missing {lost} rows from web file in merge file")
+
+      if price > MAX_MISSING_PRICE:
+          errors.append(f"CRITICAL: {duplicated} duplicate sku values detected")
+
+      if errors:
+          print("\n" + "=" * 60)
+          print("VALIDATION FAILED - STOPPING PIPELINE")
+          print("=" * 60)
+          for error in errors:
+              print(f"  {error}")
+          print("=" * 60)
+          raise Exception(f"WEB Quality Validation Failed: {len(errors)} critical issue(s)")
+
+      print("\n" + "=" * 60)
+      print("VALIDATION PASSED - WEB data quality OK")
+      print("=" * 60)
+      Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
