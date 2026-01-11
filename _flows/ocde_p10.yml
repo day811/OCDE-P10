@@ -402,17 +402,17 @@ tasks:
           """
           result = duckdb.sql(sql).fetchall()
           print(result[0][0])
-          Kestra.outputs({"lost": result[0][0]})
+          Kestra.outputs({"web_lost": result[0][0]})
 
-          merge_file= "{{ vars.tempDir }}/merge.parquet"
           erp_file="{{ vars.tempDir }}/erp_dedup.parquet"
           sql = f"""
-          SELECT COUNT(product_id) as count FROM read_parquet('{merge_file}') AS m
-          WHERE m.product_id IS NULL OR m.price IS NULL; 
+          SELECT COUNT(m.product_id) as count FROM read_parquet('{merge_file}') AS m
+          LEFT JOIN read_parquet('{erp_file}') AS e ON m.product_id = e.product_id
+          WHERE m.product_id IS NULL; 
           """
           result = duckdb.sql(sql).fetchall()
           print(result[0][0])
-          Kestra.outputs({"price": result[0][0]})
+          Kestra.outputs({"erp_lost": result[0][0]})
 
 
       # 5. ⭐ CRITICAL: Validate MERGE Quality
@@ -432,25 +432,25 @@ tasks:
         script: |
           from kestra import Kestra
 
-          lost = int("{{ outputs.test_merge.vars.lost }}")
-          price = int("{{ outputs.test_merge.vars.price }}")
+          web_lost = int("{{ outputs.test_merge.vars.web_lost }}")
+          erp_lost = int("{{ outputs.test_merge.vars.erp_lost }}")
 
           print("=" * 60)
           print("🔍 MERGE DATA QUALITY VALIDATION")
           print("=" * 60)
-          print(f"  • Missing sku in merge file : {lost}")
-          print(f"  • Missing price in merge file : {price}")
+          print(f"  • Missing web rows in merge file : {web_lost}")
+          print(f"  • Missing erp rows in merge file : {erp_lost}")
 
-          MAX_LOST = 0
-          MAX_MISSING_PRICE = 0
+          MAX_WEB_LOST = 0
+          MAX_MISSING_PRODUCT = 0
 
           errors = []
 
-          if lost > MAX_LOST:
-              errors.append(f"CRITICAL: missing {lost} rows from web file in merge file")
+          if web_lost > MAX_WEB_LOST:
+              errors.append(f"CRITICAL: missing {web_lost} rows from web file in merge file")
 
-          if price > MAX_MISSING_PRICE:
-              errors.append(f"CRITICAL: {duplicated} duplicate sku values detected")
+          if erp_lost > MAX_MISSING_PRODUCT:
+              errors.append(f"CRITICAL: missing {web_lost} rows from merge file in erp")
 
           if errors:
               print("\n" + "=" * 60)
@@ -466,12 +466,6 @@ tasks:
           print("=" * 60)
           Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
 
-      - id: sales_total
-        type: io.kestra.plugin.jdbc.duckdb.Query
-        sql: |-
-          SELECT ROUND(SUM(total_sales * price),2 ) AS sales_total FROM '{{ vars.tempDir }}/merge.parquet';
-        fetchType: FETCH_ONE
-
       - id: log_merge
         type: io.kestra.plugin.core.log.Log
         message: |
@@ -482,9 +476,116 @@ tasks:
               📁 Source: dedup_web -- raw_link -- dedup_erp
               🔄 Rows in dedup_web : {{ outputs.dedup_web.outputs[0].row.total_dedup }}
               📈 Total rows merged: {{ outputs.merge_files.outputs[0].row.merged }}
-              🧪 Missing sku from web in merge : {{ outputs.test_merge.vars.lost }}
-              🧪 Missing price in merge : {{ outputs.test_merge.vars.price }}
+              🧪 Missing sku from web in merge : {{ outputs.test_merge.vars.web_lost }}
+              🧪 Missing product from merge  in erp: {{ outputs.test_merge.vars.erp_lost }}
               ✅ Quality check: {{ outputs.validate_merge.vars.status }}
+              ════════════════════════════════════════════════════════
+
+  - id: process_sales
+    type: io.kestra.plugin.core.flow.Sequential
+    tasks:
+      - id: sales_total
+        type: io.kestra.plugin.jdbc.duckdb.Query
+        sql: |-
+          SELECT ROUND(SUM(total_sales * price),2 ) AS sales_total FROM '{{ vars.tempDir }}/merge.parquet';
+        fetchType: FETCH_ONE
+
+      - id: test_sales
+        type: io.kestra.plugin.scripts.python.Script
+        description: "Test SALES data quality metrics"
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+
+        retry:
+          type: constant
+          maxDuration: PT3M
+          maxAttempts: 2
+          interval: PT30S
+        dependencies:
+          - duckdb
+          - kestra
+        script: |
+          import duckdb
+          from kestra import Kestra
+    
+          merge_file= "{{ vars.tempDir }}/merge.parquet"
+          sql = f"""
+          SELECT COUNT(m.sku) as count FROM read_parquet('{merge_file}') AS m 
+          WHERE (m.price IS NULL OR m.price <=0 ) ; 
+          """
+          result = duckdb.sql(sql).fetchall()
+          print(result[0][0])
+          Kestra.outputs({"wrong_prices": result[0][0]})
+
+          sql = f"""
+          SELECT COUNT(m.sku) as count FROM read_parquet('{merge_file}') AS m 
+          WHERE (m.total_sales IS NULL OR m.total_sales < 0) ; 
+          """
+          result = duckdb.sql(sql).fetchall()
+          print(result[0][0])
+          Kestra.outputs({"wrong_qty": result[0][0]})
+
+      - id: validate_sales
+        type: io.kestra.plugin.scripts.python.Script
+        description: "⭐ CRITICAL: Validate MERGE quality - STOP pipeline if errors"
+
+        taskRunner:
+          type: io.kestra.plugin.core.runner.Process
+
+        retry:
+          type: constant
+          maxDuration: PT3M
+          maxAttempts: 2
+          interval: PT30S
+
+        script: |
+          from kestra import Kestra
+
+          wrong_prices = int("{{ outputs.test_sales.vars.wrong_prices }}")
+          wrong_qty = int("{{ outputs.test_sales.vars.wrong_qty }}")
+
+          print("=" * 60)
+          print("🔍 SALES DATA QUALITY VALIDATION")
+          print("=" * 60)
+          print(f"  • Missing/Negative/0 price or  in merge file : {wrong_prices}")
+          print(f"  • Missing/Negative total_sales in merge file : {wrong_qty}")
+
+          MAX_WRONG_PRICE = 0
+          MAX_WRONG_QTY = 0
+
+          errors = []
+
+          if wrong_prices > MAX_WRONG_PRICE:
+              errors.append(f"CRITICAL: {wrong_prices} missing /negative/ equal 0 prices in merge file")
+
+          if wrong_qty > MAX_WRONG_QTY:
+              errors.append(f"CRITICAL: {wrong_qty} missing /negative total_sales in merge file")
+
+          if errors:
+              print("\n" + "=" * 60)
+              print("VALIDATION FAILED - STOPPING PIPELINE")
+              print("=" * 60)
+              for error in errors:
+                  print(f"  {error}")
+              print("=" * 60)
+              raise Exception(f"Sales Computing  Quality Validation Failed: {len(errors)} critical issue(s)")
+
+          print("\n" + "=" * 60)
+          print("VALIDATION PASSED - Sales Computing  Quality OK")
+          print("=" * 60)
+          Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
+          
+      - id: log_sales
+        type: io.kestra.plugin.core.log.Log
+        message: |
+              -
+              ════════════════════════════════════════════════════════
+              📊         MERGE PROCESS SUMMARY
+              ════════════════════════════════════════════════════════
+              📁 Source: merge file
+              📈 Incorrect prices : {{ outputs.test_sales.vars.wrong_prices }}
+              📈 Incorrect Sale quantity : {{ outputs.test_sales.vars.wrong_prices }}
+              ✅ Quality check: {{ outputs.validate_sales.vars.status }}
               🧹 Total sales: {{ outputs.sales_total.row.sales_total }}
               ════════════════════════════════════════════════════════
 
@@ -493,7 +594,7 @@ tasks:
         sql: |-
           INSTALL excel;
           LOAD excel;
-          COPY(SELECT product_id, sku, post_title , total_sales, price, ROUND(total_sales * price , 2) AS sales_product FROM read_parquet('{{ vars.tempDir }}/merge.parquet') ORDER BY sales_product DESC)
+          COPY(SELECT product_id, sku, post_title, onsale_web, stock_quantity , total_sales, price, ROUND(total_sales * price , 2) AS sales_product FROM read_parquet('{{ vars.tempDir }}/merge.parquet') ORDER BY sales_product DESC)
            TO '{{ vars.outputDir }}/sales_product.xlsx ' WITH(FORMAT xlsx, HEADER true);
 
       - id: z_score
