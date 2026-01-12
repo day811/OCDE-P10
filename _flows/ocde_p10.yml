@@ -22,24 +22,57 @@ tasks:
         tasks:
           # 1. LOAD SOURCE
           - id: load_erp
-            type: io.kestra.plugin.jdbc.duckdb.Queries
+            type: io.kestra.plugin.jdbc.duckdb.Query
             description: Extract ERP data from Excel
             retry:
               type: constant
               maxAttempts: 3
               maxDuration: PT5M
               interval: PT3M
+            sql: |
+              COPY (SELECT * FROM read_xlsx('/{{ vars.sourceErp }}', header = true))
+              TO '{{ vars.tempDir }}/erp_raw.parquet' (FORMAT PARQUET)
 
-            sql: |-
-              -- total lignes source
-              CREATE OR REPLACE TABLE erp_raw AS
-              SELECT *
-              FROM read_xlsx('{{ vars.sourceErp }}', header = true);
+        # 2. ⭐ VALIDATION IMMÉDIATE du load
+          - id: validate_load_erp
+            type: io.kestra.plugin.scripts.python.Script
 
-              COPY erp_raw TO '{{ vars.tempDir }}/erp_raw.parquet' (FORMAT PARQUET);
-              SELECT COUNT(*) AS total_raw FROM erp_raw;
-            fetchType: FETCH_ONE
+            taskRunner:
+              type: io.kestra.plugin.core.runner.Process
 
+            dependencies:
+              - duckdb
+              - kestra
+              
+            script: |
+              import duckdb
+              from kestra import Kestra
+              
+              sql = "SELECT COUNT(*) FROM read_parquet('{{ vars.tempDir }}/erp_raw.parquet')"
+              result = duckdb.sql(sql).fetchall()
+              count = result[0][0]
+              
+              # Vérifier colonnes attendues
+              sql = """
+              DESCRIBE SELECT * FROM '{{ vars.tempDir }}/erp_raw.parquet';
+              """
+              cols = duckdb.sql(sql).fetchall()
+              col_names = [col[0] for col in cols]
+              
+              required = ['product_id', 'price', 'stock_quantity']
+              missing = [col for col in required if col not in col_names]
+              Kestra.outputs({"missing_col": len(missing)})
+
+
+              if missing:
+                  raise Exception(f"❌ FICHIER INVALIDE: colonnes manquantes {missing}")
+              if count == 0:
+                  raise Exception(f"❌ FICHIER VIDE")
+              Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
+              
+              print(f"✅ Load validé: {count} rows, colonnes OK")
+              Kestra.outputs({"total_raw": count})
+              
           # 2. CLEAN SOURCE 
           - id: clean_erp
             type: io.kestra.plugin.jdbc.duckdb.Queries
@@ -50,7 +83,7 @@ tasks:
               FROM read_parquet('{{ vars.tempDir }}/erp_raw.parquet')
               WHERE product_id IS NOT NULL;
               COPY erp_clean TO '{{ vars.tempDir }}/erp_clean.parquet' (FORMAT PARQUET);
-              SELECT total_clean, {{ outputs.load_erp.outputs[0].row.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM erp_clean)
+              SELECT total_clean, {{ outputs.validate_load_erp.vars.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM erp_clean)
             fetchType: FETCH_ONE
 
           # 3. DEDUP CLEANED SOURCE
@@ -168,12 +201,15 @@ tasks:
               📊         ERP PIPELINE SUMMARY
               ════════════════════════════════════════════════════════
               📁 Source: Fichier_erp.xlsx
-              📈 Total rows loaded: {{ outputs.load_erp.outputs[0].row.total_raw }}
-              🧹 Rows cleaned: {{ outputs.clean_erp.outputs[0].row.cleaned }}
-              🔄 Rows after dedup: {{ outputs.dedup_erp.outputs[0].row.total_dedup }}
-              🧪 Missing product_id: {{ outputs.test_erp.vars.missings }}
-              🧪 Duplicated product_id: {{ outputs.test_erp.vars.duplicated }}
-              ✅ Quality check: {{ outputs.validate_erp_quality.vars.status }}
+              📈 Total rows loaded: {{ outputs.validate_load_erp.vars.total_raw }}
+              📈 Missing columns  : {{ outputs.validate_load_erp.vars.missing_col }}
+              ✅  Load status      : {{ outputs.validate_load_erp.vars.status }}
+
+              🧹 Rows cleaned     : {{ outputs.clean_erp.outputs[0].row.cleaned }}
+              🔄 Rows after dedup : {{ outputs.dedup_erp.outputs[0].row.total_dedup }}
+              🧪 Missing product_id    : {{ outputs.test_erp.vars.missings }}
+              🧪 Duplicated product_id : {{ outputs.test_erp.vars.duplicated }}
+              ✅  Quality check         : {{ outputs.validate_erp_quality.vars.status }}
               ════════════════════════════════════════════════════════
 
       - id: process_web
@@ -208,7 +244,46 @@ tasks:
               df.sort_values(by='total_sales', ascending=False, inplace=True)
               # Sauvegarder en parquet
               df.to_parquet('{{ vars.tempDir }}/web_raw.parquet', engine='fastparquet')
-              Kestra.outputs({"total_raw": len(df)})
+
+        # 2. ⭐ VALIDATION IMMÉDIATE du load
+          - id: validate_load_web
+            type: io.kestra.plugin.scripts.python.Script
+
+            taskRunner:
+              type: io.kestra.plugin.core.runner.Process
+
+            dependencies:
+              - duckdb
+              - kestra
+              
+            script: |
+              import duckdb
+              from kestra import Kestra
+              
+              sql = "SELECT COUNT(*) FROM read_parquet('{{ vars.tempDir }}/web_raw.parquet')"
+              result = duckdb.sql(sql).fetchall()
+              count = result[0][0]
+              
+              # Vérifier colonnes attendues
+              sql = """
+              DESCRIBE SELECT * FROM '{{ vars.tempDir }}/web_raw.parquet';
+              """
+              cols = duckdb.sql(sql).fetchall()
+              col_names = [col[0] for col in cols]
+              
+              required = ['sku', 'total_sales']
+              missing = [col for col in required if col not in col_names]
+              Kestra.outputs({"missing_col": len(missing)})
+
+
+              if missing:
+                  raise Exception(f"❌ FICHIER INVALIDE: colonnes manquantes {missing}")
+              if count == 0:
+                  raise Exception(f"❌ FICHIER VIDE")
+              Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
+              
+              print(f"✅ Load validé: {count} rows, colonnes OK")
+              Kestra.outputs({"total_raw": count})
 
           # 2. CLEAN SOURCE 
           - id: clean_web
@@ -219,7 +294,7 @@ tasks:
               FROM read_parquet('{{ vars.tempDir }}/web_raw.parquet')
               WHERE sku IS NOT NULL;
               COPY web_clean TO '{{ vars.tempDir }}/web_clean.parquet' (FORMAT PARQUET);
-              SELECT total_clean, {{ outputs.load_web.vars.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM web_clean)
+              SELECT total_clean, {{ outputs.validate_load_web.vars.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM web_clean)
             fetchType: FETCH_ONE
 
           # 3. DEDUP CLEANED SOURCE
@@ -334,7 +409,10 @@ tasks:
               📊         WEB PIPELINE SUMMARY
               ════════════════════════════════════════════════════════
               📁 Source: Fichier_web.xlsx
-              📈 Total rows loaded: {{ outputs.load_web.vars.total_raw }}
+              📈 Total rows loaded: {{ outputs.validate_load_web.vars.total_raw }}
+              📈 Missing columns  : {{ outputs.validate_load_web.vars.missing_col }}
+              ✅  Load status      : {{ outputs.validate_load_web.vars.status }}
+
               🧹 Rows cleaned: {{ outputs.clean_web.outputs[0].row.cleaned }}
               🔄 Rows after dedup: {{ outputs.dedup_web.outputs[0].row.total_dedup }}
               🧪 Missing sku: {{ outputs.test_web.vars.missings }}
@@ -349,14 +427,70 @@ tasks:
         tasks:
           # 1. LOAD SOURCE
           - id: load_link
-            type: io.kestra.plugin.jdbc.duckdb.Queries
-            sql: |-
-              -- total lignes source
-              CREATE OR REPLACE TABLE web_raw AS
-              SELECT *
-              FROM read_xlsx('{{ vars.sourceLink }}', header = true, all_varchar = true);
+            type: io.kestra.plugin.jdbc.duckdb.Query
+            description: Extract ERP data from Excel
+            retry:
+              type: constant
+              maxAttempts: 3
+              maxDuration: PT5M
+              interval: PT3M
+            sql: |
+              COPY (SELECT * FROM read_xlsx('/{{ vars.sourceLink }}', header = true, all_varchar = true))
+              TO '{{ vars.tempDir }}/link_raw.parquet' (FORMAT PARQUET)
 
-              COPY web_raw TO '{{ vars.tempDir }}/link_raw.parquet' (FORMAT PARQUET);
+        # 2. ⭐ VALIDATION IMMÉDIATE du load
+          - id: validate_load_link
+            type: io.kestra.plugin.scripts.python.Script
+
+            taskRunner:
+              type: io.kestra.plugin.core.runner.Process
+
+            dependencies:
+              - duckdb
+              - kestra
+              
+            script: |
+              import duckdb
+              from kestra import Kestra
+              
+              sql = "SELECT COUNT(*) FROM read_parquet('{{ vars.tempDir }}/link_raw.parquet')"
+              result = duckdb.sql(sql).fetchall()
+              count = result[0][0]
+              
+              # Vérifier colonnes attendues
+              sql = """
+              DESCRIBE SELECT * FROM '{{ vars.tempDir }}/link_raw.parquet';
+              """
+              cols = duckdb.sql(sql).fetchall()
+              col_names = [col[0] for col in cols]
+              
+              required = ['product_id', 'id_web']
+              missing = [col for col in required if col not in col_names]
+              Kestra.outputs({"missing_col": len(missing)})
+
+
+              if missing:
+                  raise Exception(f"❌ FICHIER INVALIDE: colonnes manquantes {missing}")
+              if count == 0:
+                  raise Exception(f"❌ FICHIER VIDE")
+              Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
+              
+              print(f"✅ Load validé: {count} rows, colonnes OK")
+              Kestra.outputs({"total_raw": count})
+              
+          # 5. REPORT DEDUP
+          - id: log_link
+            type: io.kestra.plugin.core.log.Log
+            message: |
+              -
+              ════════════════════════════════════════════════════════
+              📊         WEB PIPELINE SUMMARY
+              ════════════════════════════════════════════════════════
+              📁 Source: Fichier_web.xlsx
+              📈 Total rows loaded: {{ outputs.validate_load_link.vars.total_raw }}
+              📈 Missing columns  : {{ outputs.validate_load_link.vars.missing_col }}
+              ✅  Load status      : {{ outputs.validate_load_link.vars.status }}
+              ════════════════════════════════════════════════════════
 
   - id: process_merge
     type: io.kestra.plugin.core.flow.Sequential
@@ -861,6 +995,7 @@ tasks:
               WHERE z.z_score < 2 ORDER BY z_score DESC )
               TO '{{ vars.outputDir }}/ordinary.csv ' WITH(FORMAT csv, HEADER true);
 
+
   - id: log_final
     type: io.kestra.plugin.core.log.Log
     message: |+
@@ -868,6 +1003,8 @@ tasks:
       ════════════════════════════════════════════════════════════
       📊              PIPELINE EXECUTION COMPLETED
       ════════════════════════════════════════════════════════════
+      📅 Started: {{ execution.startDate | date('yyyy-MM-dd HH:mm:ss') }}
+    
       📊 Merged records: {{ outputs.merge_files.outputs[0].row.merged }}
       💰 Total sales: {{ outputs.sales_total.row.sales_total }}
 
