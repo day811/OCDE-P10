@@ -51,8 +51,8 @@ Ce pipeline **Kestra** automatise le processus ETL (Extract, Transform, Load) po
 │  ERP BRANCH        │  WEB BRANCH      │  LIAISON BRANCH          │
 ├────────────────────┼──────────────────┼──────────────────────────┤
 │ • load_erp         │ • load_web       │ • load_link              │
-│ • clean_erp        │ • clean_web      │ • validate_load_link ✓   │
-│ • valide_load_erp ✓│ • valide_load_web│ • log_link               │
+│ • valide_load_erp ✓│ • valide_load_web│ • validate_load_link ✓   │
+│ • clean_erp        │ • clean_web      │ • log_link               │
 │ • dedup_erp        │ • dedup_web      │                          │
 │ • test_erp         │ • test_web       │                          │
 │ • validate_erp ✓   │ • validate_web ✓ │                          │
