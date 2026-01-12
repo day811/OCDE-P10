@@ -242,7 +242,7 @@ tasks:
               from kestra import Kestra
               # Lire le fichier Excel
               df = pd.read_excel('{{ vars.sourceWeb }}', dtype = {'sku': str})
-              df.sort_values(by='total_sales', ascending=False, inplace=True)
+              df.sort_values(by='tax_status', ascending=False, inplace=True)
               # Sauvegarder en parquet
               df.to_parquet('{{ vars.tempDir }}/web_raw.parquet', engine='fastparquet')
 
@@ -486,24 +486,28 @@ tasks:
               print(f"✅ Load validé: {count} rows, colonnes OK")
               Kestra.outputs({"total_raw": count})
               
-          # 5. REPORT DEDUP
+          # 3. REPORT LINK INGESTION
           - id: log_link
             type: io.kestra.plugin.core.log.Log
             description: "Report liaison.xlsx file ingestion"
             message: |
               -
               ════════════════════════════════════════════════════════
-              📊         WEB PIPELINE SUMMARY
+              📊         LINK PIPELINE SUMMARY
               ════════════════════════════════════════════════════════
-              📁 Source: Fichier_web.xlsx
+              📁 Source: fichier_liaison.xlsx
               📈 Total rows loaded: {{ outputs.validate_load_link.vars.total_raw }}
               📈 Missing columns  : {{ outputs.validate_load_link.vars.missing_col }}
               ✅  Load status      : {{ outputs.validate_load_link.vars.status }}
               ════════════════════════════════════════════════════════
 
+  # =============== MERGE BRANCH ===============
+
   - id: process_merge
     type: io.kestra.plugin.core.flow.Sequential
     tasks:
+
+      # 1. MERGE FILES
       - id: merge_files
         type: io.kestra.plugin.jdbc.duckdb.Queries
         description: "MERGE all 3 files"
@@ -518,6 +522,7 @@ tasks:
           SELECT COUNT(*) as merged FROM merge;
         fetchType: FETCH_ONE
 
+      # 2. TEST MERGE QUALITY
       - id: test_merge
         type: io.kestra.plugin.scripts.python.Script
         description: "Test MERGE data quality metrics"
@@ -559,7 +564,7 @@ tasks:
           Kestra.outputs({"erp_lost": result[0][0]})
 
 
-      # 5. ⭐ CRITICAL: Validate MERGE Quality
+      # 3. ⭐ CRITICAL: Validate MERGE Quality
       - id: validate_merge
         type: io.kestra.plugin.scripts.python.Script
         description: "⭐ CRITICAL: Validate MERGE quality - STOP pipeline if errors"
@@ -610,6 +615,7 @@ tasks:
           print("=" * 60)
           Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
 
+      # 4. REPORT MERGE SUMMARY
       - id: log_merge
         type: io.kestra.plugin.core.log.Log
         description: "Report merge process summary"
@@ -626,11 +632,15 @@ tasks:
               ✅ Quality check: {{ outputs.validate_merge.vars.status }}
               ════════════════════════════════════════════════════════
 
+  # =============== SALES COMPUTE BRANCH ===============
+
   - id: process_sales
     type: io.kestra.plugin.core.flow.Sequential
     description: Compute and validate sales
 
     tasks:
+
+      # 1. GET TOTAL SALES
       - id: sales_total
         type: io.kestra.plugin.jdbc.duckdb.Query
         description: "Calculate total sales"
@@ -638,6 +648,7 @@ tasks:
           SELECT ROUND(SUM(total_sales * price),2 ) AS sales_total FROM '{{ vars.tempDir }}/merge.parquet';
         fetchType: FETCH_ONE
 
+      # 2. TEST SALES CONSISTENCY
       - id: test_sales
         type: io.kestra.plugin.scripts.python.Script
         description: "Test SALES data quality metrics"
@@ -673,6 +684,7 @@ tasks:
           print(result[0][0])
           Kestra.outputs({"wrong_qty": result[0][0]})
 
+      # 3. VALIDATE SALES CONSISTENCY
       - id: validate_sales
         type: io.kestra.plugin.scripts.python.Script
         description: "⭐ CRITICAL: Validate MERGE quality - STOP pipeline if errors"
@@ -723,6 +735,7 @@ tasks:
           print("=" * 60)
           Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
           
+      # 4. GENERATE XLS SALES OUTPUT
       - id: sales_products
         type: io.kestra.plugin.jdbc.duckdb.Queries
         retry:
@@ -737,6 +750,7 @@ tasks:
           COPY(SELECT product_id, sku, post_title, onsale_web, stock_quantity , total_sales, price, ROUND(total_sales * price , 2) AS sales_product FROM read_parquet('{{ vars.tempDir }}/merge.parquet') ORDER BY sales_product DESC)
            TO '{{ vars.outputDir }}/sales_product.xlsx ' WITH(FORMAT xlsx, HEADER true);
 
+      # 5. REPORT SALES SUMMARY
       - id: log_sales
         type: io.kestra.plugin.core.log.Log
         description: Sales Process Summary
@@ -752,10 +766,15 @@ tasks:
               🧹 Total sales: {{ outputs.sales_total.row.sales_total }}
               ════════════════════════════════════════════════════════
 
+
+  # =============== ZSCORE BRANCH ===============
+
   - id: process_zscore
     type: io.kestra.plugin.core.flow.Sequential
     description: Z-score process
     tasks:
+
+      # 1. GENERATE ZSCORE PRODUCT FILE
       - id: z_score
         type: io.kestra.plugin.scripts.python.Script
         taskRunner:
@@ -769,6 +788,7 @@ tasks:
           df['z_score']= (df.price - df.price.mean())/df.price.std()
           df[['product_id', 'z_score']].to_csv('{{ vars.tempDir }}/z_score.csv')
 
+      # 2. TEST ZSCORE QUALITY
       - id: test_zscore
         type: io.kestra.plugin.scripts.python.Script
         description: "Test Z-score calculation consistency and segmentation"
@@ -867,6 +887,7 @@ tasks:
               "missing_zscore": int(missing_zscore)
           })
 
+      # 4. REPORT VALIDATE ZSCORE QUALITY
       - id: validate_zscore
         type: io.kestra.plugin.scripts.python.Script
         description: "⭐ CRITICAL: Validate Z-score consistency - STOP pipeline if errors"
@@ -959,6 +980,7 @@ tasks:
               "ordinary_count": ordinary_count
           })
 
+      # 5. REPORT ZSCORE SUMMARY
       - id: log_zscore
         type: io.kestra.plugin.core.log.Log
         description: "Report Z-score calculation and segmentation summary"
@@ -989,10 +1011,16 @@ tasks:
           
           ════════════════════════════════════════════════════════
 
-
+      # GENERATE ZSCORE BASED CSV FILES
       - id: process_class
         type: io.kestra.plugin.core.flow.Parallel
         description: Export CSV
+        retry:
+          type: constant
+          maxDuration: PT3M
+          maxAttempts: 2
+          interval: PT30S
+        
         tasks:
 
           - id: premium_csv
