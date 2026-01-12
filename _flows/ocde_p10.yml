@@ -36,6 +36,7 @@ tasks:
         # 2. ⭐ VALIDATION IMMÉDIATE du load
           - id: validate_load_erp
             type: io.kestra.plugin.scripts.python.Script
+            description: Validation of ERP data from Excel
 
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
@@ -73,7 +74,7 @@ tasks:
               print(f"✅ Load validé: {count} rows, colonnes OK")
               Kestra.outputs({"total_raw": count})
               
-          # 2. CLEAN SOURCE 
+          # 3. CLEAN SOURCE 
           - id: clean_erp
             type: io.kestra.plugin.jdbc.duckdb.Queries
             description: Remove missing data
@@ -86,7 +87,7 @@ tasks:
               SELECT total_clean, {{ outputs.validate_load_erp.vars.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM erp_clean)
             fetchType: FETCH_ONE
 
-          # 3. DEDUP CLEANED SOURCE
+          # 4. DEDUP CLEANED SOURCE
           - id: dedup_erp
             type: io.kestra.plugin.jdbc.duckdb.Queries
             description: "Remove duplicate sku rows"
@@ -98,7 +99,7 @@ tasks:
               SELECT total_dedup, {{ outputs.clean_erp.outputs[0].row.total_clean }} - total_dedup AS dedup FROM ( SELECT COUNT(*) AS total_dedup FROM dedup_erp)
             fetchType: FETCH_ONE
 
-          # 4. TEST FINAL DATA DB
+          # 5. TEST FINAL DATA DB
           - id: test_erp
             type: io.kestra.plugin.scripts.python.Script
             description: "Test ERP data quality metrics"
@@ -140,7 +141,7 @@ tasks:
               print(result[0][0])
               Kestra.outputs({"duplicated": result[0][0]})
 
-          # 5. ⭐ CRITICAL: Validate ERP Quality
+          # 6. ⭐ CRITICAL: Validate ERP Quality
           - id: validate_erp_quality
             type: io.kestra.plugin.scripts.python.Script
             description: "⭐ CRITICAL: Validate ERP quality - STOP pipeline if errors"
@@ -191,7 +192,7 @@ tasks:
               print("=" * 60)
               Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
 
-          # 6. REPORT PROCESS
+          # 7. REPORT PROCESS
           - id: log_erp
             type: io.kestra.plugin.core.log.Log
             description: Report erp.xlsx file ingestion
@@ -248,6 +249,7 @@ tasks:
         # 2. ⭐ VALIDATION IMMÉDIATE du load
           - id: validate_load_web
             type: io.kestra.plugin.scripts.python.Script
+            description: Validation of WEB data from Excel
 
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
@@ -285,9 +287,10 @@ tasks:
               print(f"✅ Load validé: {count} rows, colonnes OK")
               Kestra.outputs({"total_raw": count})
 
-          # 2. CLEAN SOURCE 
+          # 3. CLEAN SOURCE 
           - id: clean_web
             type: io.kestra.plugin.jdbc.duckdb.Queries
+            description: "Remove missing data"            
             sql: |-
               CREATE OR REPLACE TABLE web_clean AS
               SELECT *
@@ -297,9 +300,10 @@ tasks:
               SELECT total_clean, {{ outputs.validate_load_web.vars.total_raw }} - total_clean AS cleaned FROM ( SELECT COUNT(*) AS total_clean FROM web_clean)
             fetchType: FETCH_ONE
 
-          # 3. DEDUP CLEANED SOURCE
+          # 4. DEDUP CLEANED SOURCE
           - id: dedup_web
             type: io.kestra.plugin.jdbc.duckdb.Queries
+            description: "Remove duplicate sku rows"
             sql: |-
               CREATE OR REPLACE TABLE dedup_web AS
               SELECT DISTINCT ON(sku) * FROM read_parquet('{{ vars.tempDir }}/web_clean.parquet');
@@ -308,9 +312,11 @@ tasks:
               SELECT total_dedup, {{ outputs.clean_web.outputs[0].row.total_clean }} - total_dedup AS dedup FROM ( SELECT COUNT(*) AS total_dedup FROM dedup_web)
             fetchType: FETCH_ONE
 
-          # 4. TEST FINAL DATA DB
+          # 5. TEST FINAL DATA DB
           - id: test_web
             type: io.kestra.plugin.scripts.python.Script
+            description: "Test WEB data quality metrics"
+
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
 
@@ -349,7 +355,7 @@ tasks:
               print(result[0][0])
               Kestra.outputs({"duplicated": result[0][0]})
 
-          # 5. ⭐ CRITICAL: Validate WEB Quality
+          # 6. ⭐ CRITICAL: Validate WEB Quality
           - id: validate_web_quality
             type: io.kestra.plugin.scripts.python.Script
             description: "⭐ CRITICAL: Validate WEB quality - STOP pipeline if errors"
@@ -400,9 +406,10 @@ tasks:
               print("=" * 60)
               Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
 
-          # 5. REPORT DEDUP
+          # 7. REPORT DEDUP
           - id: log_web
             type: io.kestra.plugin.core.log.Log
+            description: "Report web.xlsx file ingestion"
             message: |
               -
               ════════════════════════════════════════════════════════
@@ -441,6 +448,7 @@ tasks:
         # 2. ⭐ VALIDATION IMMÉDIATE du load
           - id: validate_load_link
             type: io.kestra.plugin.scripts.python.Script
+            description: Validation of Liaison data from Excel
 
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
@@ -481,6 +489,7 @@ tasks:
           # 5. REPORT DEDUP
           - id: log_link
             type: io.kestra.plugin.core.log.Log
+            description: "Report liaison.xlsx file ingestion"
             message: |
               -
               ════════════════════════════════════════════════════════
@@ -497,6 +506,7 @@ tasks:
     tasks:
       - id: merge_files
         type: io.kestra.plugin.jdbc.duckdb.Queries
+        description: "MERGE all 3 files"
         sql: |-
           CREATE OR REPLACE TABLE merge AS
           SELECT e.*, w.* FROM read_parquet('{{ vars.tempDir }}/dedup_erp.parquet') AS e
@@ -510,7 +520,7 @@ tasks:
 
       - id: test_merge
         type: io.kestra.plugin.scripts.python.Script
-        description: "Test ERP data quality metrics"
+        description: "Test MERGE data quality metrics"
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
 
@@ -602,6 +612,7 @@ tasks:
 
       - id: log_merge
         type: io.kestra.plugin.core.log.Log
+        description: "Report merge process summary"
         message: |
               -
               ════════════════════════════════════════════════════════
@@ -617,9 +628,12 @@ tasks:
 
   - id: process_sales
     type: io.kestra.plugin.core.flow.Sequential
+    description: Compute and validate sales
+
     tasks:
       - id: sales_total
         type: io.kestra.plugin.jdbc.duckdb.Query
+        description: "Calculate total sales"
         sql: |-
           SELECT ROUND(SUM(total_sales * price),2 ) AS sales_total FROM '{{ vars.tempDir }}/merge.parquet';
         fetchType: FETCH_ONE
@@ -709,20 +723,6 @@ tasks:
           print("=" * 60)
           Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
           
-      - id: log_sales
-        type: io.kestra.plugin.core.log.Log
-        message: |
-              -
-              ════════════════════════════════════════════════════════
-              📊         MERGE PROCESS SUMMARY
-              ════════════════════════════════════════════════════════
-              📁 Source: merge file
-              📈 Incorrect prices : {{ outputs.test_sales.vars.wrong_prices }}
-              📈 Incorrect Sale quantity : {{ outputs.test_sales.vars.wrong_prices }}
-              ✅ Quality check: {{ outputs.validate_sales.vars.status }}
-              🧹 Total sales: {{ outputs.sales_total.row.sales_total }}
-              ════════════════════════════════════════════════════════
-
       - id: sales_products
         type: io.kestra.plugin.jdbc.duckdb.Queries
         retry:
@@ -737,8 +737,24 @@ tasks:
           COPY(SELECT product_id, sku, post_title, onsale_web, stock_quantity , total_sales, price, ROUND(total_sales * price , 2) AS sales_product FROM read_parquet('{{ vars.tempDir }}/merge.parquet') ORDER BY sales_product DESC)
            TO '{{ vars.outputDir }}/sales_product.xlsx ' WITH(FORMAT xlsx, HEADER true);
 
+      - id: log_sales
+        type: io.kestra.plugin.core.log.Log
+        description: Sales Process Summary
+        message: |
+              -
+              ════════════════════════════════════════════════════════
+              📊         SALES PROCESS SUMMARY
+              ════════════════════════════════════════════════════════
+              📁 Source: merge file
+              📈 Incorrect prices : {{ outputs.test_sales.vars.wrong_prices }}
+              📈 Incorrect Sale quantity : {{ outputs.test_sales.vars.wrong_prices }}
+              ✅ Quality check: {{ outputs.validate_sales.vars.status }}
+              🧹 Total sales: {{ outputs.sales_total.row.sales_total }}
+              ════════════════════════════════════════════════════════
+
   - id: process_zscore
     type: io.kestra.plugin.core.flow.Sequential
+    description: Z-score process
     tasks:
       - id: z_score
         type: io.kestra.plugin.scripts.python.Script
@@ -998,6 +1014,7 @@ tasks:
 
   - id: log_final
     type: io.kestra.plugin.core.log.Log
+    description: Final Log
     message: |+
       -
       ════════════════════════════════════════════════════════════
@@ -1022,4 +1039,5 @@ tasks:
 triggers:
   - id: monthly_schedule
     type: io.kestra.plugin.core.trigger.Schedule
+    description: Schedule every 15h at 9h00
     cron: 0 9 15 * *

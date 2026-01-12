@@ -8,7 +8,7 @@ tasks:
     type: io.kestra.plugin.git.PushFlows
     description: Push flows to Git
     url: https://github.com/day811/OCDE-P10
-    branch: dev
+    branch: main
     username: "{{ secret('GIT_ACCESS_USER') }}"
     password: "{{ secret('GIT_ACCESS_TOKEN') }}"
     sourceNamespace: company.team
