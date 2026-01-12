@@ -151,15 +151,13 @@ KESTRA_BASIC_AUTH_USERNAME=admin@kestra.io
 KESTRA_BASIC_AUTH_PASSWORD=Admin1234
 
 # ===== SMTP (pour notifications d'erreur) =====
-ENV_SMTP_HOST=smtp.gmail.com
-ENV_SMTP_PORT=587
-ENV_SMTP_USER=your-email@gmail.com
-ENV_SMTP_PASSWORD=your-app-password
-ENV_SMTP_FROM=your-email@gmail.com
+SECRET_SMTP_HOST=smtp.gmail.com|base64
+SECRET_SMTP_USER=your-email@gmail.com|base64
+SECRET_SMTP_PASSWORD=your-app-password|base64
 
 # ===== GIT (pour git_push.yml - sauvegarde YAML vers GitHub) =====
-GIT_ACCESS_USER=your-github-username
-GIT_ACCESS_TOKEN=your-github-token
+SECRET_GIT_ACCESS_USER=your-github-username|base64
+SECRET_GIT_ACCESS_TOKEN=your-github-token|base64
 
 # ===== POSTGRESQL (par défaut, optionnel à modifier) =====
 POSTGRES_DB=kestra
