@@ -32,34 +32,29 @@ tasks:
             sql: |
               COPY (SELECT * FROM read_xlsx('/{{ vars.sourceErp }}', header = true))
               TO '{{ vars.tempDir }}/erp_raw.parquet' (FORMAT PARQUET)
-
-        # 2. ⭐ VALIDATION IMMÉDIATE du load
           - id: validate_load_erp
             type: io.kestra.plugin.scripts.python.Script
             description: Validation of ERP data from Excel
-
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
-
             dependencies:
               - duckdb
               - kestra
-              
             script: |
               import duckdb
               from kestra import Kestra
-              
+
               sql = "SELECT COUNT(*) FROM read_parquet('{{ vars.tempDir }}/erp_raw.parquet')"
               result = duckdb.sql(sql).fetchall()
               count = result[0][0]
-              
+
               # Vérifier colonnes attendues
               sql = """
               DESCRIBE SELECT * FROM '{{ vars.tempDir }}/erp_raw.parquet';
               """
               cols = duckdb.sql(sql).fetchall()
               col_names = [col[0] for col in cols]
-              
+
               required = ['product_id', 'price', 'stock_quantity']
               missing = [col for col in required if col not in col_names]
               Kestra.outputs({"missing_col": len(missing)})
@@ -70,10 +65,17 @@ tasks:
               if count == 0:
                   raise Exception(f"❌ FICHIER VIDE")
               Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
-              
+
               print(f"✅ Load validé: {count} rows, colonnes OK")
               Kestra.outputs({"total_raw": count})
-              
+            retry:
+              type: exponential
+              behavior: CREATE_NEW_EXECUTION
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT20S
+              maxInterval: PT5M
+
           # 3. CLEAN SOURCE 
           - id: clean_erp
             type: io.kestra.plugin.jdbc.duckdb.Queries
@@ -246,10 +248,18 @@ tasks:
               # Sauvegarder en parquet
               df.to_parquet('{{ vars.tempDir }}/web_raw.parquet', engine='fastparquet')
 
-        # 2. ⭐ VALIDATION IMMÉDIATE du load
+          # 2. ⭐ VALIDATION IMMÉDIATE du load
           - id: validate_load_web
             type: io.kestra.plugin.scripts.python.Script
             description: Validation of WEB data from Excel
+
+            retry:
+              type: exponential
+              behavior: CREATE_NEW_EXECUTION
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT20S
+              maxInterval: PT5M
 
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
@@ -257,22 +267,22 @@ tasks:
             dependencies:
               - duckdb
               - kestra
-              
+
             script: |
               import duckdb
               from kestra import Kestra
-              
+
               sql = "SELECT COUNT(*) FROM read_parquet('{{ vars.tempDir }}/web_raw.parquet')"
               result = duckdb.sql(sql).fetchall()
               count = result[0][0]
-              
+
               # Vérifier colonnes attendues
               sql = """
               DESCRIBE SELECT * FROM '{{ vars.tempDir }}/web_raw.parquet';
               """
               cols = duckdb.sql(sql).fetchall()
               col_names = [col[0] for col in cols]
-              
+
               required = ['sku', 'total_sales']
               missing = [col for col in required if col not in col_names]
               Kestra.outputs({"missing_col": len(missing)})
@@ -283,14 +293,14 @@ tasks:
               if count == 0:
                   raise Exception(f"❌ FICHIER VIDE")
               Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
-              
+
               print(f"✅ Load validé: {count} rows, colonnes OK")
               Kestra.outputs({"total_raw": count})
 
           # 3. CLEAN SOURCE 
           - id: clean_web
             type: io.kestra.plugin.jdbc.duckdb.Queries
-            description: "Remove missing data"            
+            description: "Remove missing data"
             sql: |-
               CREATE OR REPLACE TABLE web_clean AS
               SELECT *
@@ -445,7 +455,7 @@ tasks:
               COPY (SELECT * FROM read_xlsx('/{{ vars.sourceLink }}', header = true, all_varchar = true))
               TO '{{ vars.tempDir }}/link_raw.parquet' (FORMAT PARQUET)
 
-        # 2. ⭐ VALIDATION IMMÉDIATE du load
+          # 2. ⭐ VALIDATION IMMÉDIATE du load
           - id: validate_load_link
             type: io.kestra.plugin.scripts.python.Script
             description: Validation of Liaison data from Excel
@@ -453,25 +463,33 @@ tasks:
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
 
+            retry:
+              type: exponential
+              behavior: CREATE_NEW_EXECUTION
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT20S
+              maxInterval: PT5M
+
             dependencies:
               - duckdb
               - kestra
-              
+
             script: |
               import duckdb
               from kestra import Kestra
-              
+
               sql = "SELECT COUNT(*) FROM read_parquet('{{ vars.tempDir }}/link_raw.parquet')"
               result = duckdb.sql(sql).fetchall()
               count = result[0][0]
-              
+
               # Vérifier colonnes attendues
               sql = """
               DESCRIBE SELECT * FROM '{{ vars.tempDir }}/link_raw.parquet';
               """
               cols = duckdb.sql(sql).fetchall()
               col_names = [col[0] for col in cols]
-              
+
               required = ['product_id', 'id_web']
               missing = [col for col in required if col not in col_names]
               Kestra.outputs({"missing_col": len(missing)})
@@ -482,10 +500,10 @@ tasks:
               if count == 0:
                   raise Exception(f"❌ FICHIER VIDE")
               Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
-              
+
               print(f"✅ Load validé: {count} rows, colonnes OK")
               Kestra.outputs({"total_raw": count})
-              
+
           # 3. REPORT LINK INGESTION
           - id: log_link
             type: io.kestra.plugin.core.log.Log
@@ -541,7 +559,7 @@ tasks:
         script: |
           import duckdb
           from kestra import Kestra
-    
+
           merge_file= "{{ vars.tempDir }}/merge.parquet"
           web_file="{{ vars.tempDir }}/web_dedup.parquet"
           sql = f"""
@@ -562,7 +580,6 @@ tasks:
           result = duckdb.sql(sql).fetchall()
           print(result[0][0])
           Kestra.outputs({"erp_lost": result[0][0]})
-
 
       # 3. ⭐ CRITICAL: Validate MERGE Quality
       - id: validate_merge
@@ -620,17 +637,17 @@ tasks:
         type: io.kestra.plugin.core.log.Log
         description: "Report merge process summary"
         message: |
-              -
-              ════════════════════════════════════════════════════════
-              📊         MERGE PROCESS SUMMARY
-              ════════════════════════════════════════════════════════
-              📁 Source: dedup_web -- raw_link -- dedup_erp
-              🔄 Rows in dedup_web : {{ outputs.dedup_web.outputs[0].row.total_dedup }}
-              📈 Total rows merged: {{ outputs.merge_files.outputs[0].row.merged }}
-              🧪 Missing sku from web in merge : {{ outputs.test_merge.vars.web_lost }}
-              🧪 Missing product from merge  in erp: {{ outputs.test_merge.vars.erp_lost }}
-              ✅ Quality check: {{ outputs.validate_merge.vars.status }}
-              ════════════════════════════════════════════════════════
+          -
+          ════════════════════════════════════════════════════════
+          📊         MERGE PROCESS SUMMARY
+          ════════════════════════════════════════════════════════
+          📁 Source: dedup_web -- raw_link -- dedup_erp
+          🔄 Rows in dedup_web : {{ outputs.dedup_web.outputs[0].row.total_dedup }}
+          📈 Total rows merged: {{ outputs.merge_files.outputs[0].row.merged }}
+          🧪 Missing sku from web in merge : {{ outputs.test_merge.vars.web_lost }}
+          🧪 Missing product from merge  in erp: {{ outputs.test_merge.vars.erp_lost }}
+          ✅ Quality check: {{ outputs.validate_merge.vars.status }}
+          ════════════════════════════════════════════════════════
 
   # =============== SALES COMPUTE BRANCH ===============
 
@@ -666,7 +683,7 @@ tasks:
         script: |
           import duckdb
           from kestra import Kestra
-    
+
           merge_file= "{{ vars.tempDir }}/merge.parquet"
           sql = f"""
           SELECT COUNT(m.sku) as count FROM read_parquet('{merge_file}') AS m 
@@ -734,7 +751,7 @@ tasks:
           print("VALIDATION PASSED - Sales Computing  Quality OK")
           print("=" * 60)
           Kestra.outputs({"status": "SUCCESS", "validation_passed": True})
-          
+
       # 4. GENERATE XLS SALES OUTPUT
       - id: sales_products
         type: io.kestra.plugin.jdbc.duckdb.Queries
@@ -747,7 +764,7 @@ tasks:
         sql: |-
           INSTALL excel;
           LOAD excel;
-          COPY(SELECT product_id, sku, post_title, onsale_web, stock_quantity , total_sales, price, ROUND(total_sales * price , 2) AS sales_product FROM read_parquet('{{ vars.tempDir }}/merge.parquet') ORDER BY sales_product DESC)
+          COPY(SELECT product_id, sku, post_title, onsale_web, stock_quantity , total_sales, price, ROUND(total_sales * price , 2) AS product_sales FROM read_parquet('{{ vars.tempDir }}/merge.parquet') ORDER BY product_sales DESC)
            TO '{{ vars.outputDir }}/sales_product.xlsx ' WITH(FORMAT xlsx, HEADER true);
 
       # 5. REPORT SALES SUMMARY
@@ -755,17 +772,16 @@ tasks:
         type: io.kestra.plugin.core.log.Log
         description: Sales Process Summary
         message: |
-              -
-              ════════════════════════════════════════════════════════
-              📊         SALES PROCESS SUMMARY
-              ════════════════════════════════════════════════════════
-              📁 Source: merge file
-              📈 Incorrect prices : {{ outputs.test_sales.vars.wrong_prices }}
-              📈 Incorrect Sale quantity : {{ outputs.test_sales.vars.wrong_prices }}
-              ✅ Quality check: {{ outputs.validate_sales.vars.status }}
-              🧹 Total sales: {{ outputs.sales_total.row.sales_total }}
-              ════════════════════════════════════════════════════════
-
+          -
+          ════════════════════════════════════════════════════════
+          📊         SALES PROCESS SUMMARY
+          ════════════════════════════════════════════════════════
+          📁 Source: merge file
+          📈 Incorrect prices : {{ outputs.test_sales.vars.wrong_prices }}
+          📈 Incorrect Sale quantity : {{ outputs.test_sales.vars.wrong_prices }}
+          ✅ Quality check: {{ outputs.validate_sales.vars.status }}
+          🧹 Total sales: {{ outputs.sales_total.row.sales_total }}
+          ════════════════════════════════════════════════════════
 
   # =============== ZSCORE BRANCH ===============
 
@@ -792,59 +808,59 @@ tasks:
       - id: test_zscore
         type: io.kestra.plugin.scripts.python.Script
         description: "Test Z-score calculation consistency and segmentation"
-        
+
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
-        
+
         retry:
           type: constant
           maxDuration: PT3M
           maxAttempts: 2
           interval: PT30S
-        
+
         dependencies:
           - duckdb
           - pandas
           - kestra
           - fastparquet
-        
+
         script: |
           import duckdb
           import pandas as pd
           from kestra import Kestra
-          
+
           merge_file = "{{ vars.tempDir }}/merge.parquet"
           zscore_file = "{{ vars.tempDir }}/z_score.csv"
-          
+
           # Read merge and z_score data
           df_merge = pd.read_parquet(merge_file, engine='fastparquet')
           df_zscore = pd.read_csv(zscore_file)
-          
+
           # Test 1: Count total products in both files
           sql = f"""
           SELECT COUNT(*) as total_merge FROM read_parquet('{merge_file}')
           """
           total_merge = duckdb.sql(sql).fetchall()[0][0]
           total_zscore = len(df_zscore)
-          
+
           # Test 2: Count premium (z_score >= 2)
           premium_count = (df_zscore['z_score'] >= 2).sum()
-          
+
           # Test 3: Count ordinary (z_score < 2)
           ordinary_count = (df_zscore['z_score'] < 2).sum()
-          
+
           # Test 4: Check z_score statistics
           z_mean = df_zscore['z_score'].mean()
           z_std = df_zscore['z_score'].std()
           z_min = df_zscore['z_score'].min()
           z_max = df_zscore['z_score'].max()
-          
+
           # Test 5: Verify segmentation consistency
           consistency = (premium_count + ordinary_count) == total_zscore
-          
+
           # Test 6: Verify no missing z_score values
           missing_zscore = df_zscore['z_score'].isnull().sum()
-          
+
           print(f"""
           ════════════════════════════════════════════════════════
           🧮 Z-SCORE CALCULATION TEST
@@ -872,7 +888,7 @@ tasks:
 
           ════════════════════════════════════════════════════════
           """)
-          
+
           # Output results for validation
           Kestra.outputs({
               "total_merge": int(total_merge),
@@ -891,19 +907,19 @@ tasks:
       - id: validate_zscore
         type: io.kestra.plugin.scripts.python.Script
         description: "⭐ CRITICAL: Validate Z-score consistency - STOP pipeline if errors"
-        
+
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
-        
+
         retry:
           type: constant
           maxDuration: PT3M
           maxAttempts: 2
           interval: PT30S
-        
+
         script: |
           from kestra import Kestra
-          
+
           total_merge = int("{{ outputs.test_zscore.vars.total_merge }}")
           total_zscore = int("{{ outputs.test_zscore.vars.total_zscore }}")
           premium_count = int("{{ outputs.test_zscore.vars.premium_count }}")
@@ -912,44 +928,44 @@ tasks:
           missing_zscore = int("{{ outputs.test_zscore.vars.missing_zscore }}")
           z_score_mean = float("{{ outputs.test_zscore.vars.z_score_mean }}")
           z_score_std = float("{{ outputs.test_zscore.vars.z_score_std }}")
-          
+
           print("=" * 60)
           print("🔍 Z-SCORE VALIDATION")
           print("=" * 60)
-          
+
           errors = []
           warnings = []
-          
+
           # CRITICAL: Data coverage mismatch
           if total_merge != total_zscore:
               errors.append(
                   f"CRITICAL: Merge has {total_merge} rows but z_score has {total_zscore}"
               )
-          
+
           # CRITICAL: Segmentation inconsistency
           if not consistency:
               errors.append(
                   f"CRITICAL: Segmentation failed (premium + ordinary != total)"
               )
-          
+
           # CRITICAL: Missing z_score values
           if missing_zscore > 0:
               errors.append(
                   f"CRITICAL: {missing_zscore} missing z_score values"
               )
-          
+
           # WARNING: No premium products detected
           if premium_count == 0:
               warnings.append(
                   f"⚠️ WARNING: No premium products detected (z_score ≥ 2)"
               )
-          
+
           # WARNING: Unusual z_score distribution
           if z_score_std < 0.1:
               warnings.append(
                   f"⚠️ WARNING: Z-score std dev very low ({z_score_std:.4f}) - prices may lack variance"
               )
-          
+
           # Display errors
           if errors:
               print("\n🔴 VALIDATION FAILED:")
@@ -957,9 +973,9 @@ tasks:
                   print(f"  • {err}")
               print("=" * 60)
               raise Exception(f"Z-Score Validation Failed: {len(errors)} critical issue(s)")
-          
+
           print("\n✅ VALIDATION PASSED")
-          
+
           # Display warnings
           if warnings:
               print("\n⚠️ WARNINGS:")
@@ -970,9 +986,9 @@ tasks:
               print("   • Segmentation coherent")
               print("   • All z_scores calculated")
               status = "SUCCESS"
-          
+
           print("=" * 60)
-          
+
           Kestra.outputs({
               "status": status,
               "validation_passed": True,
@@ -984,31 +1000,31 @@ tasks:
       - id: log_zscore
         type: io.kestra.plugin.core.log.Log
         description: "Report Z-score calculation and segmentation summary"
-        
+
         message: |
           -
           ════════════════════════════════════════════════════════
-          
+
           🏆 Z-SCORE ANALYSIS SUMMARY
-          
+
           ════════════════════════════════════════════════════════
-          
+
           📊 CALCULATION:
             • Z-score mean: {{ outputs.test_zscore.vars.z_score_mean }}
             • Z-score std dev: {{ outputs.test_zscore.vars.z_score_std }}
             • Z-score range: [{{ outputs.test_zscore.vars.z_score_min }}, {{ outputs.test_zscore.vars.z_score_max }}]
-          
+
           🎯 SEGMENTATION:
             • Premium wines (z_score ≥ 2): {{ outputs.validate_zscore.vars.premium_count }}
             • Ordinary wines (z_score < 2): {{ outputs.validate_zscore.vars.ordinary_count }}
             • Total: {{ outputs.test_zscore.vars.total_zscore }}
-          
+
           ✅ Quality check: {{ outputs.validate_zscore.vars.status }}
-          
+
           📁 Output files will be created:
             • premium.csv ({{ outputs.validate_zscore.vars.premium_count }} products)
             • ordinary.csv ({{ outputs.validate_zscore.vars.ordinary_count }} products)
-          
+
           ════════════════════════════════════════════════════════
 
       # GENERATE ZSCORE BASED CSV FILES
@@ -1020,7 +1036,7 @@ tasks:
           maxDuration: PT3M
           maxAttempts: 2
           interval: PT30S
-        
+
         tasks:
 
           - id: premium_csv
@@ -1039,7 +1055,6 @@ tasks:
               WHERE z.z_score < 2 ORDER BY z_score DESC )
               TO '{{ vars.outputDir }}/ordinary.csv ' WITH(FORMAT csv, HEADER true);
 
-
   - id: log_final
     type: io.kestra.plugin.core.log.Log
     description: Final Log
@@ -1049,7 +1064,7 @@ tasks:
       📊              PIPELINE EXECUTION COMPLETED
       ════════════════════════════════════════════════════════════
       📅 Started: {{ execution.startDate | date('yyyy-MM-dd HH:mm:ss') }}
-    
+
       📊 Merged records: {{ outputs.merge_files.outputs[0].row.merged }}
       💰 Total sales: {{ outputs.sales_total.row.sales_total }}
 
