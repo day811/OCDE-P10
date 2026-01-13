@@ -3,7 +3,7 @@ sources/*
 *.parquet
 data/output/*
 data/tmp/*
-
+~lock.*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
