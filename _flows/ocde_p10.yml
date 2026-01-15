@@ -11,6 +11,10 @@ variables:
   outputDir: /app/data/output
 
 tasks:
+  - id: start
+    type: io.kestra.plugin.core.debug.Return
+    format: "\"{{ taskrun.startDate }}\""
+
   - id: load_files
     type: io.kestra.plugin.core.flow.Parallel
     description: ETL Files in parallel
@@ -1055,6 +1059,31 @@ tasks:
               WHERE z.z_score < 2 ORDER BY z_score DESC )
               TO '{{ vars.outputDir }}/ordinary.csv ' WITH(FORMAT csv, HEADER true);
 
+  - id: duration_calc
+    type: io.kestra.plugin.scripts.python.Script
+    description: Execution time calculation
+    dependencies:
+      - datetime
+      - kestra
+
+    script: |
+      fin = "{{ taskrun.startDate }}"
+
+      from datetime import datetime
+      from kestra import Kestra
+
+      deb = {{ outputs.start.value }}
+      print(f"deb : {deb}") 
+      print(f"fin : {fin}")       
+
+      dt_deb = datetime.fromisoformat(deb.replace("Z", "+00:00"))
+      dt_fin = datetime.fromisoformat(fin.replace("Z", "+00:00"))
+
+      delta = dt_fin - dt_deb
+      print(delta)          
+      print(delta.total_seconds())  
+      Kestra.outputs( { 'total_time' : round(delta.total_seconds(), 2)})
+
   - id: log_final
     type: io.kestra.plugin.core.log.Log
     description: Final Log
@@ -1063,7 +1092,7 @@ tasks:
       ════════════════════════════════════════════════════════════
       📊              PIPELINE EXECUTION COMPLETED
       ════════════════════════════════════════════════════════════
-      📅 Started: {{ execution.startDate | date('yyyy-MM-dd HH:mm:ss') }}
+      📅 Execution time : {{ outputs.duration_calc.vars.total_time }} sec
 
       📊 Merged records: {{ outputs.merge_files.outputs[0].row.merged }}
       💰 Total sales: {{ outputs.sales_total.row.sales_total }}

@@ -5,55 +5,30 @@ variables:
   tempDir: /app/data/tmp
   outputDir: /app/data/output
   sourceErp: /app/data/sources/Fichier_erp.xlsx
-
 tasks:
-  - id: load_erp
-    type: io.kestra.plugin.jdbc.duckdb.Query
-    description: Extract ERP data from Excel
-    retry:
-      type: constant
-      maxAttempts: 3
-      maxDuration: PT5M
-      interval: PT3M
-    sql: |
-      COPY (SELECT * FROM read_xlsx('/{{ vars.sourceErp }}', header = true))
-      TO '{{ vars.tempDir }}/erp_raw.parquet' (FORMAT PARQUET)
-
-# 2. ⭐ VALIDATION IMMÉDIATE du load
-  - id: validate_load_erp
+  - id: test_task
+    type: io.kestra.plugin.core.debug.Return
+    format: "\"{{ taskrun.startDate }}\""
+  - id: pyteval
     type: io.kestra.plugin.scripts.python.Script
-
-    taskRunner:
-      type: io.kestra.plugin.core.runner.Process
-
     dependencies:
-      - duckdb
+      - datetime
       - kestra
-      
-    script: |
-      import duckdb
-      from kestra import Kestra
-      
-      sql = "SELECT COUNT(*) FROM read_parquet('{{ vars.tempDir }}/erp_raw.parquet')"
-      result = duckdb.sql(sql).fetchall()
-      count = result[0][0]
-      
-      # Vérifier colonnes attendues
-      sql = """
-      DESCRIBE SELECT * FROM '{{ vars.tempDir }}/erp_raw.parquet';
-      """
-      cols = duckdb.sql(sql).fetchall()
-      col_names = [col[0] for col in cols]
-      
-      required = ['product_id', 'price', 'stock_quantity']
-      missing = [col for col in required if col not in col_names]
-      Kestra.outputs({"missing_cols": len(missing)})
 
-      
-      if missing:
-          raise Exception(f"❌ FICHIER INVALIDE: colonnes manquantes {missing}")
-      if count == 0:
-          raise Exception(f"❌ FICHIER VIDE")
-      
-      print(f"✅ Load validé: {count} rows, colonnes OK")
-      Kestra.outputs({"total_raw": count})
+    script: |
+      fin = "{{ taskrun.startDate }}"
+      from datetime import datetime
+      from kestra import Kestra
+      deb = {{ outputs.test_task.value }}
+      print(f"deb : {deb}") 
+      print(f"fin : {fin}")       
+
+      dt_deb = datetime.fromisoformat(deb.replace("Z", "+00:00"))
+      dt_fin = datetime.fromisoformat(fin.replace("Z", "+00:00"))
+
+      delta = dt_fin - dt_deb
+      print(delta)          # 0:01:34.033239
+      print(delta.total_seconds())  # 94.033239
+      Kestra.outputs( { 'total_time' : delta.total_seconds()})
+
+    

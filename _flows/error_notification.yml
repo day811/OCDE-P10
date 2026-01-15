@@ -11,7 +11,7 @@ triggers:
       - type: io.kestra.plugin.core.condition.ExecutionNamespace
         namespace: company.team
         prefix: true
-    disabled: false
+    disabled: true
 
 tasks:
   - id: send_mail
