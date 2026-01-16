@@ -29,6 +29,6 @@ tasks:
       delta = dt_fin - dt_deb
       print(delta)          # 0:01:34.033239
       print(delta.total_seconds())  # 94.033239
-      Kestra.outputs( { 'total_time' : delta.total_seconds()})
+      Kestra.outputs( { 'total_time' : delta.total_seconds(), 'start' : str(dt_deb)})
 
     

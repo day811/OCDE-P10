@@ -30,9 +30,10 @@ tasks:
             description: Extract ERP data from Excel
             retry:
               type: constant
-              maxAttempts: 3
-              maxDuration: PT5M
-              interval: PT3M
+              maxAttempts: 5
+              maxDuration: PT3M
+              interval: PT15S
+
             sql: |
               COPY (SELECT * FROM read_xlsx('/{{ vars.sourceErp }}', header = true))
               TO '{{ vars.tempDir }}/erp_raw.parquet' (FORMAT PARQUET)
@@ -72,18 +73,17 @@ tasks:
 
               print(f"✅ Load validé: {count} rows, colonnes OK")
               Kestra.outputs({"total_raw": count})
-            retry:
-              type: exponential
-              behavior: CREATE_NEW_EXECUTION
-              maxAttempts: 3
-              maxDuration: PT1M
-              interval: PT20S
-              maxInterval: PT5M
 
           # 3. CLEAN SOURCE 
           - id: clean_erp
             type: io.kestra.plugin.jdbc.duckdb.Queries
             description: Remove missing data
+            retry:
+              type: constant
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT5S
+              
             sql: |-
               CREATE OR REPLACE TABLE erp_clean AS
               SELECT *
@@ -98,6 +98,12 @@ tasks:
             type: io.kestra.plugin.jdbc.duckdb.Queries
             description: "Remove duplicate sku rows"
 
+            retry:
+              type: constant
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT5S
+              
             sql: |-
               CREATE OR REPLACE TABLE dedup_erp AS
               SELECT DISTINCT ON(product_id) * FROM read_parquet('{{ vars.tempDir }}/erp_clean.parquet');
@@ -111,12 +117,6 @@ tasks:
             description: "Test ERP data quality metrics"
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
-
-            retry:
-              type: constant
-              maxDuration: PT3M
-              maxAttempts: 2
-              interval: PT30S
 
             dependencies:
               - duckdb
@@ -154,12 +154,6 @@ tasks:
 
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
-
-            retry:
-              type: constant
-              maxDuration: PT3M
-              maxAttempts: 2
-              interval: PT30S
 
             script: |
               from kestra import Kestra
@@ -233,9 +227,10 @@ tasks:
 
             retry:
               type: constant
+              maxAttempts: 5
               maxDuration: PT5M
-              maxAttempts: 3
-              interval: PT3M
+              interval: PT15S
+              
 
             dependencies:
               - pandas
@@ -256,14 +251,6 @@ tasks:
           - id: validate_load_web
             type: io.kestra.plugin.scripts.python.Script
             description: Validation of WEB data from Excel
-
-            retry:
-              type: exponential
-              behavior: CREATE_NEW_EXECUTION
-              maxAttempts: 3
-              maxDuration: PT1M
-              interval: PT20S
-              maxInterval: PT5M
 
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
@@ -305,6 +292,12 @@ tasks:
           - id: clean_web
             type: io.kestra.plugin.jdbc.duckdb.Queries
             description: "Remove missing data"
+            retry:
+              type: constant
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT5S
+
             sql: |-
               CREATE OR REPLACE TABLE web_clean AS
               SELECT *
@@ -318,6 +311,12 @@ tasks:
           - id: dedup_web
             type: io.kestra.plugin.jdbc.duckdb.Queries
             description: "Remove duplicate sku rows"
+            retry:
+              type: constant
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT5S
+
             sql: |-
               CREATE OR REPLACE TABLE dedup_web AS
               SELECT DISTINCT ON(sku) * FROM read_parquet('{{ vars.tempDir }}/web_clean.parquet');
@@ -334,19 +333,13 @@ tasks:
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
 
-            retry:
-              type: constant
-              maxDuration: PT3M
-              maxAttempts: 2
-              interval: PT30S
-
             dependencies:
               - duckdb
               - kestra
             script: |
               import duckdb
               from kestra import Kestra
-              # Lire le fichier Excel
+              
               dedup_file= "{{ vars.tempDir }}/web_dedup.parquet"
               sql = f"""
               SELECT COUNT(*) as total FROM read_parquet('{dedup_file}')
@@ -376,12 +369,6 @@ tasks:
 
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
-
-            retry:
-              type: constant
-              maxDuration: PT3M
-              maxAttempts: 2
-              interval: PT30S
 
             script: |
               from kestra import Kestra
@@ -452,9 +439,10 @@ tasks:
             description: Extract ERP data from Excel
             retry:
               type: constant
-              maxAttempts: 3
+              maxAttempts: 5
               maxDuration: PT5M
-              interval: PT3M
+              interval: PT15S
+
             sql: |
               COPY (SELECT * FROM read_xlsx('/{{ vars.sourceLink }}', header = true, all_varchar = true))
               TO '{{ vars.tempDir }}/link_raw.parquet' (FORMAT PARQUET)
@@ -466,14 +454,6 @@ tasks:
 
             taskRunner:
               type: io.kestra.plugin.core.runner.Process
-
-            retry:
-              type: exponential
-              behavior: CREATE_NEW_EXECUTION
-              maxAttempts: 3
-              maxDuration: PT1M
-              interval: PT20S
-              maxInterval: PT5M
 
             dependencies:
               - duckdb
@@ -528,11 +508,16 @@ tasks:
   - id: process_merge
     type: io.kestra.plugin.core.flow.Sequential
     tasks:
-
       # 1. MERGE FILES
       - id: merge_files
         type: io.kestra.plugin.jdbc.duckdb.Queries
         description: "MERGE all 3 files"
+        retry:
+          type: constant
+          maxAttempts: 3
+          maxDuration: PT1M
+          interval: PT5S
+
         sql: |-
           CREATE OR REPLACE TABLE merge AS
           SELECT e.*, w.* FROM read_parquet('{{ vars.tempDir }}/dedup_erp.parquet') AS e
@@ -550,12 +535,6 @@ tasks:
         description: "Test MERGE data quality metrics"
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
-
-        retry:
-          type: constant
-          maxDuration: PT3M
-          maxAttempts: 2
-          interval: PT30S
 
         dependencies:
           - duckdb
@@ -592,12 +571,6 @@ tasks:
 
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
-
-        retry:
-          type: constant
-          maxDuration: PT3M
-          maxAttempts: 2
-          interval: PT30S
 
         script: |
           from kestra import Kestra
@@ -664,6 +637,12 @@ tasks:
       # 1. GET TOTAL SALES
       - id: sales_total
         type: io.kestra.plugin.jdbc.duckdb.Query
+        retry:
+          type: constant
+          maxAttempts: 3
+          maxDuration: PT1M
+          interval: PT5S
+
         description: "Calculate total sales"
         sql: |-
           SELECT ROUND(SUM(total_sales * price),2 ) AS sales_total FROM '{{ vars.tempDir }}/merge.parquet';
@@ -676,11 +655,6 @@ tasks:
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
 
-        retry:
-          type: constant
-          maxDuration: PT3M
-          maxAttempts: 2
-          interval: PT30S
         dependencies:
           - duckdb
           - kestra
@@ -712,12 +686,6 @@ tasks:
 
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
-
-        retry:
-          type: constant
-          maxDuration: PT3M
-          maxAttempts: 2
-          interval: PT30S
 
         script: |
           from kestra import Kestra
@@ -761,9 +729,10 @@ tasks:
         type: io.kestra.plugin.jdbc.duckdb.Queries
         retry:
           type: constant
-          maxDuration: PT3M
-          maxAttempts: 2
-          interval: PT30S
+          maxAttempts: 3
+          maxDuration: PT1M
+          interval: PT5S
+
 
         sql: |-
           INSTALL excel;
@@ -799,6 +768,12 @@ tasks:
         type: io.kestra.plugin.scripts.python.Script
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
+        retry:
+          type: constant
+          maxAttempts: 3
+          maxDuration: PT1M
+          interval: PT5S
+
         dependencies:
           - pandas
           - fastparquet
@@ -815,12 +790,6 @@ tasks:
 
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
-
-        retry:
-          type: constant
-          maxDuration: PT3M
-          maxAttempts: 2
-          interval: PT30S
 
         dependencies:
           - duckdb
@@ -847,11 +816,11 @@ tasks:
           total_merge = duckdb.sql(sql).fetchall()[0][0]
           total_zscore = len(df_zscore)
 
-          # Test 2: Count premium (z_score >= 2)
-          premium_count = (df_zscore['z_score'] >= 2).sum()
+          # Test 2: Count premium 
+          premium_count = (df_zscore['z_score'] > 2).sum()
 
-          # Test 3: Count ordinary (z_score < 2)
-          ordinary_count = (df_zscore['z_score'] < 2).sum()
+          # Test 3: Count ordinary 
+          ordinary_count = (df_zscore['z_score'] <= 2).sum()
 
           # Test 4: Check z_score statistics
           z_mean = df_zscore['z_score'].mean()
@@ -876,8 +845,8 @@ tasks:
             • Match: {'✅ YES' if total_merge == total_zscore else '❌ NO'}
 
           🏆 SEGMENTATION:
-            • Premium (z_score ≥ 2): {premium_count}
-            • Ordinary (z_score < 2): {ordinary_count}
+            • Premium (z_score > 2): {premium_count}
+            • Ordinary (z_score <= 2): {ordinary_count}
             • Total: {premium_count + ordinary_count}
             • Consistency: {'✅ OK' if consistency else '❌ FAIL'}
 
@@ -914,12 +883,6 @@ tasks:
 
         taskRunner:
           type: io.kestra.plugin.core.runner.Process
-
-        retry:
-          type: constant
-          maxDuration: PT3M
-          maxAttempts: 2
-          interval: PT30S
 
         script: |
           from kestra import Kestra
@@ -1045,6 +1008,12 @@ tasks:
 
           - id: premium_csv
             type: io.kestra.plugin.jdbc.duckdb.Queries
+            retry:
+              type: constant
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT5S
+
             sql: |-
               COPY(SELECT z.z_score, m.* FROM read_csv('{{ vars.tempDir }}/z_score.csv') as z 
               INNER JOIN read_parquet('{{ vars.tempDir }}/merge.parquet') AS m ON z.product_id = m.product_id 
@@ -1053,6 +1022,12 @@ tasks:
 
           - id: ordinary_csv
             type: io.kestra.plugin.jdbc.duckdb.Queries
+            retry:
+              type: constant
+              maxAttempts: 3
+              maxDuration: PT1M
+              interval: PT5S
+
             sql: |-
               COPY(SELECT z.z_score, m.* FROM read_csv('{{ vars.tempDir }}/z_score.csv') as z 
               INNER JOIN read_parquet('{{ vars.tempDir }}/merge.parquet') AS m ON z.product_id = m.product_id 
@@ -1082,7 +1057,7 @@ tasks:
       delta = dt_fin - dt_deb
       print(delta)          
       print(delta.total_seconds())  
-      Kestra.outputs( { 'total_time' : round(delta.total_seconds(), 2)})
+      Kestra.outputs( { 'total_time' : delta.total_seconds(), 'start' : str(dt_deb)})
 
   - id: log_final
     type: io.kestra.plugin.core.log.Log
@@ -1092,7 +1067,8 @@ tasks:
       ════════════════════════════════════════════════════════════
       📊              PIPELINE EXECUTION COMPLETED
       ════════════════════════════════════════════════════════════
-      📅 Execution time : {{ outputs.duration_calc.vars.total_time }} sec
+      📅 Start time     :  {{ outputs.duration_calc.vars.start }}
+      📈 Duration       : {{ outputs.duration_calc.vars.total_time }} sec
 
       📊 Merged records: {{ outputs.merge_files.outputs[0].row.merged }}
       💰 Total sales: {{ outputs.sales_total.row.sales_total }}
